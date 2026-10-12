@@ -1,0 +1,9 @@
+:::lmf:callout {kind="info" title="Syntax"}
+Directives look like this:
+
+```markdown
+:::lmf:callout
+inner
+:::
+```
+:::

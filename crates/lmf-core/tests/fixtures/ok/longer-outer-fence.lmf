@@ -1,0 +1,7 @@
+::::lmf:callout {kind="note"}
+A longer outer fence lets the body contain a literal delimiter line:
+
+:::
+
+Done.
+::::

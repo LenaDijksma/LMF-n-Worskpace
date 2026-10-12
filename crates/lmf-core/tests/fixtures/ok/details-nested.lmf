@@ -1,0 +1,7 @@
+:::lmf:details {title="More information" open=false}
+This content can be collapsed in a capable renderer.
+
+:::lmf:callout {kind="tip" id="tip-1"}
+A nested **callout**.
+:::
+:::

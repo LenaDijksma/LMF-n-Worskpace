@@ -1,0 +1,13 @@
+[package]
+name = "lmf-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line tool for LMF: check, convert and inspect documents"
+publish = false
+
+[[bin]]
+name = "lmf"
+path = "src/main.rs"
+
+[dependencies]
+lmf-core = { path = "../lmf-core" }

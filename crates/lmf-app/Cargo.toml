@@ -1,0 +1,19 @@
+[package]
+name = "lmf-app"
+version = "0.1.0"
+edition = "2021"
+description = "Lovely Workspace: native desktop application (Slint) built on lmf-core"
+publish = false
+
+[[bin]]
+name = "lovely"
+path = "src/main.rs"
+
+[dependencies]
+lmf-core = { path = "../lmf-core" }
+lmf-workspace = { path = "../lmf-workspace" }
+slint = "1"
+rfd = "0.15"
+
+[build-dependencies]
+slint-build = "1"

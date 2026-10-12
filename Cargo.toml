@@ -1,0 +1,3 @@
+[workspace]
+resolver = "2"
+members = ["crates/lmf-core", "crates/lmf-cli", "crates/lmf-workspace", "crates/lmf-app"]

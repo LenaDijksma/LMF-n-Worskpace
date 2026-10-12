@@ -1,0 +1,28 @@
+# Project notes
+
+Paste normal Markdown here. This is **bold**, *italic*, and `inline code`.
+
+- One item
+- Another item
+  - Nested item
+
+1. First
+2. Second
+
+[Open GitHub](https://github.com) and a footnote-free paragraph with Time: 10:30.
+
+> A quote.
+
+| a | b |
+|---|---|
+| 1 | 2 |
+
+```python
+def hello():
+    print("Hello from ordinary Markdown")
+```
+
+<details>
+<summary>Raw HTML stays Markdown</summary>
+Plain HTML block.
+</details>

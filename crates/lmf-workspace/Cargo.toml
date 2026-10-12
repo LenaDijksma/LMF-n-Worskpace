@@ -1,0 +1,9 @@
+[package]
+name = "lmf-workspace"
+version = "0.1.0"
+edition = "2021"
+description = "Workspace index for LMF notes: folder scan, link resolution, backlinks and search"
+publish = false
+
+[dependencies]
+lmf-core = { path = "../lmf-core" }

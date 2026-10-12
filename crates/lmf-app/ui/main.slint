@@ -1,0 +1,340 @@
+import { Button, TextEdit, LineEdit, ScrollView, ListView, Palette } from "std-widgets.slint";
+
+// Colours and scale come from Rust (src/theme.rs, src/settings.rs).
+export global Theme {
+    in property <color> window-bg: #f5f5f5;
+    in property <color> sidebar-bg: #f4f4f6;
+    in property <color> sidebar-text: #1f1f1f;
+    in property <color> sidebar-muted: #595959;
+    in property <color> hover: #e3e6f6;
+    in property <color> panel-bg: #ffffff;
+    in property <color> text: #1f1f1f;
+    in property <color> link: #1565c0;
+    in property <color> diag-bg: #fafafa;
+    in property <float> scale: 1.0;
+}
+
+export struct PreviewLink {
+    text: string,
+    target: string,
+    external: bool,
+    tint: color,
+}
+
+export struct PreviewItem {
+    title: string,
+    body: string,
+    indent: length,
+    fill: color,
+    accent: color,
+    font-size: length,
+    bold: bool,
+    mono: bool,
+    links: [PreviewLink],
+}
+
+export struct DiagItem {
+    text: string,
+    tint: color,
+}
+
+export struct NavItem {
+    label: string,
+    detail: string,
+    path: string,
+}
+
+export struct LinkItem {
+    text: string,
+    path: string,
+    tint: color,
+    header: bool,
+}
+
+export component MainWindow inherits Window {
+    title: root.window-title;
+    background: Theme.window-bg;
+    preferred-width: 1480px;
+    preferred-height: 820px;
+    min-width: 900px;
+    min-height: 480px;
+
+    in property <string> window-title: "Lovely Workspace";
+    in property <string> status: "";
+    in property <string> save-status: "";
+    in property <string> folder-label: "No folder open";
+    in property <string> theme-name: "Light";
+    in property <bool> dark-scheme: false;
+    in property <length> editor-font-size: 14px;
+    in-out property <string> editor-text: "";
+    in property <[PreviewItem]> preview-items: [];
+    in property <[DiagItem]> diagnostics: [];
+    in property <[NavItem]> nav-items: [];
+    in property <[LinkItem]> link-items: [];
+
+    callback open-clicked();
+    callback save-clicked();
+    callback text-edited(string);
+    callback open-folder-clicked();
+    callback search-edited(string);
+    callback nav-clicked(string);
+    callback link-clicked(string);
+    callback preview-link-clicked(string, bool);
+    callback theme-clicked();
+    callback font-smaller();
+    callback font-larger();
+
+    init => {
+        Palette.color-scheme = root.dark-scheme ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark-scheme => {
+        Palette.color-scheme = root.dark-scheme ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    // Keyboard shortcuts (Ctrl, or Cmd on macOS):
+    //   S save · O open file · Shift+O open folder · F search
+    //   + / - font size · Shift+T cycle theme
+    FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control || event.modifiers.meta) {
+                if (event.text == "s") { root.save-clicked(); return accept; }
+                if (event.text == "o") { root.open-clicked(); return accept; }
+                if (event.text == "O") { root.open-folder-clicked(); return accept; }
+                if (event.text == "f") { search-input.focus(); return accept; }
+                if (event.text == "=" || event.text == "+") { root.font-larger(); return accept; }
+                if (event.text == "-") { root.font-smaller(); return accept; }
+                if (event.text == "T") { root.theme-clicked(); return accept; }
+            }
+            return reject;
+        }
+
+        HorizontalLayout {
+            // ---------------- Sidebar: files, search, links ----------------
+            Rectangle {
+                width: 300px * Theme.scale;
+                background: Theme.sidebar-bg;
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+
+                    Button {
+                        text: "Open folder…";
+                        clicked => { root.open-folder-clicked(); }
+                    }
+                    Text {
+                        text: root.folder-label;
+                        color: Theme.sidebar-muted;
+                        font-size: 11px * Theme.scale;
+                        wrap: word-wrap;
+                    }
+                    search-input := LineEdit {
+                        placeholder-text: "Search notes…";
+                        edited(t) => { root.search-edited(t); }
+                    }
+
+                    Rectangle {
+                        vertical-stretch: 1;
+                        ListView {
+                            for n in root.nav-items: Rectangle {
+                                height: 46px * Theme.scale;
+                                background: nav-touch.has-hover ? Theme.hover : transparent;
+                                VerticalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    padding-top: 4px;
+                                    Text {
+                                        text: n.label;
+                                        color: Theme.sidebar-text;
+                                        font-size: 14px * Theme.scale;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: n.detail;
+                                        color: Theme.sidebar-muted;
+                                        font-size: 11px * Theme.scale;
+                                        overflow: elide;
+                                    }
+                                }
+                                nav-touch := TouchArea {
+                                    clicked => { root.nav-clicked(n.path); }
+                                    accessible-role: button;
+                                    accessible-label: n.label + ", " + n.detail;
+                                    accessible-action-default => { root.nav-clicked(n.path); }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 210px * Theme.scale;
+                        background: Theme.panel-bg;
+                        ListView {
+                            for l in root.link-items: Rectangle {
+                                height: 26px * Theme.scale;
+                                background: link-touch.has-hover && l.path != "" ? Theme.hover : transparent;
+                                Text {
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    text: l.text;
+                                    color: l.tint;
+                                    font-size: 12px * Theme.scale;
+                                    font-weight: l.header ? 700 : 400;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                link-touch := TouchArea {
+                                    enabled: l.path != "";
+                                    clicked => { root.link-clicked(l.path); }
+                                    accessible-role: button;
+                                    accessible-label: l.text;
+                                    accessible-action-default => { root.link-clicked(l.path); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---------------- Main area ----------------
+            VerticalLayout {
+                // Toolbar
+                HorizontalLayout {
+                    padding: 8px;
+                    spacing: 8px;
+                    Button {
+                        text: "Open file…";
+                        clicked => { root.open-clicked(); }
+                    }
+                    Button {
+                        text: "Save";
+                        clicked => { root.save-clicked(); }
+                    }
+                    Text {
+                        text: root.save-status;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        text: root.status;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                    Button {
+                        text: "A−";
+                        clicked => { root.font-smaller(); }
+                    }
+                    Button {
+                        text: "A+";
+                        clicked => { root.font-larger(); }
+                    }
+                    Button {
+                        text: "Theme: " + root.theme-name;
+                        clicked => { root.theme-clicked(); }
+                    }
+                }
+
+                // Editor | Preview
+                HorizontalLayout {
+                    spacing: 1px;
+
+                    TextEdit {
+                        font-size: root.editor-font-size;
+                        text <=> root.editor-text;
+                        edited(t) => { root.text-edited(t); }
+                    }
+
+                    Rectangle {
+                        background: Theme.panel-bg;
+                        ScrollView {
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                padding: 14px;
+
+                                for item in root.preview-items: HorizontalLayout {
+                                    Rectangle { width: item.indent; }
+                                    Rectangle {
+                                        background: item.fill;
+                                        border-radius: 6px;
+                                        HorizontalLayout {
+                                            Rectangle {
+                                                width: 4px;
+                                                background: item.accent;
+                                            }
+                                            VerticalLayout {
+                                                padding: 10px;
+                                                spacing: 4px;
+                                                if item.title != "": Text {
+                                                    text: item.title;
+                                                    font-weight: 700;
+                                                    color: item.accent;
+                                                    font-size: 15px * Theme.scale;
+                                                    wrap: word-wrap;
+                                                }
+                                                if item.body != "": Text {
+                                                    text: item.body;
+                                                    color: Theme.text;
+                                                    wrap: word-wrap;
+                                                    font-size: item.font-size;
+                                                    font-weight: item.bold ? 700 : 400;
+                                                    font-family: item.mono ? "monospace" : "";
+                                                }
+                                                if item.links.length > 0: HorizontalLayout {
+                                                    spacing: 6px;
+                                                    alignment: start;
+                                                    for l in item.links: Rectangle {
+                                                        background: chip-touch.has-hover && l.target != "" ? Theme.hover : transparent;
+                                                        border-radius: 4px;
+                                                        HorizontalLayout {
+                                                            padding-left: 6px;
+                                                            padding-right: 6px;
+                                                            padding-top: 2px;
+                                                            padding-bottom: 2px;
+                                                            Text {
+                                                                text: l.text;
+                                                                color: l.tint;
+                                                                font-size: 13px * Theme.scale;
+                                                            }
+                                                        }
+                                                        chip-touch := TouchArea {
+                                                            enabled: l.target != "";
+                                                            clicked => { root.preview-link-clicked(l.target, l.external); }
+                                                            accessible-role: button;
+                                                            accessible-label: l.text;
+                                                            accessible-action-default => { root.preview-link-clicked(l.target, l.external); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Diagnostics
+                Rectangle {
+                    height: 140px * Theme.scale;
+                    background: Theme.diag-bg;
+                    ListView {
+                        for d in root.diagnostics: Rectangle {
+                            height: 22px * Theme.scale;
+                            Text {
+                                x: 12px;
+                                text: d.text;
+                                color: d.tint;
+                                font-size: 12px * Theme.scale;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

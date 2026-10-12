@@ -1,0 +1,9 @@
+[package]
+name = "lmf-core"
+version = "0.1.0"
+edition = "2021"
+description = "Parser, document model, validator and converters for LMF (Lovely Markdown Format)"
+publish = false
+
+# Intentionally dependency-free: the core library must build offline and stay auditable.
+[dependencies]
