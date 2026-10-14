@@ -1,0 +1,6 @@
+:::lmf:include {document="Project Plan" section="Milestones"}
+Fallback: See the Project Plan document for milestones.
+:::
+
+:::lmf:include {document="Project Plan" block="milestone-03"}
+:::

@@ -40,6 +40,8 @@ pub struct ExtensionSpec {
     pub required_parent: Option<&'static str>,
     /// If set, the only directives allowed directly inside (qualified names).
     pub allowed_children: Option<&'static [&'static str]>,
+    /// Pairs of attributes that must not be used together.
+    pub exclusive: &'static [(&'static str, &'static str)],
 }
 
 /// Namespace reserved for extensions defined by the LMF specification itself.
@@ -72,6 +74,7 @@ pub static EXTENSIONS: &[ExtensionSpec] = &[
         body: BodyRule::Required,
         required_parent: None,
         allowed_children: None,
+        exclusive: &[],
     },
     ExtensionSpec {
         namespace: "lmf",
@@ -95,6 +98,7 @@ pub static EXTENSIONS: &[ExtensionSpec] = &[
         body: BodyRule::Required,
         required_parent: None,
         allowed_children: None,
+        exclusive: &[],
     },
     ExtensionSpec {
         namespace: "lmf",
@@ -105,6 +109,7 @@ pub static EXTENSIONS: &[ExtensionSpec] = &[
         body: BodyRule::Required,
         required_parent: None,
         allowed_children: Some(&["lmf:tab"]),
+        exclusive: &[],
     },
     ExtensionSpec {
         namespace: "lmf",
@@ -120,6 +125,69 @@ pub static EXTENSIONS: &[ExtensionSpec] = &[
         body: BodyRule::Required,
         required_parent: Some("lmf:tabs"),
         allowed_children: None,
+        exclusive: &[],
+    },
+    ExtensionSpec {
+        namespace: "lmf",
+        name: "include",
+        version: 1,
+        summary: "Include a section or block of another document; the body is the fallback text",
+        attrs: &[
+            AttrSpec {
+                name: "document",
+                ty: AttrType::Str,
+                required: true,
+                allowed: None,
+            },
+            AttrSpec {
+                name: "section",
+                ty: AttrType::Str,
+                required: false,
+                allowed: None,
+            },
+            AttrSpec {
+                name: "block",
+                ty: AttrType::Str,
+                required: false,
+                allowed: None,
+            },
+        ],
+        body: BodyRule::Optional,
+        required_parent: None,
+        allowed_children: None,
+        exclusive: &[("section", "block")],
+    },
+    ExtensionSpec {
+        namespace: "lmf",
+        name: "math",
+        version: 1,
+        summary: "Display math source (LaTeX); rendering is optional",
+        attrs: &[AttrSpec {
+            name: "format",
+            ty: AttrType::Str,
+            required: false,
+            allowed: Some(&["latex"]),
+        }],
+        body: BodyRule::Required,
+        required_parent: None,
+        allowed_children: None,
+        exclusive: &[],
+    },
+    ExtensionSpec {
+        namespace: "lmf",
+        name: "diagram",
+        version: 1,
+        summary: "Diagram source (never executed); rendering is optional",
+        attrs: &[AttrSpec {
+            name: "type",
+            ty: AttrType::Str,
+            required: true,
+            allowed: Some(&["mermaid"]),
+        }],
+        body: BodyRule::Required,
+        required_parent: None,
+        allowed_children: None,
+        exclusive: &[],
     },
 ];
 

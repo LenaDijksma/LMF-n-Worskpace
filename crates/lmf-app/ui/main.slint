@@ -11,14 +11,19 @@ export global Theme {
     in property <color> text: #1f1f1f;
     in property <color> link: #1565c0;
     in property <color> diag-bg: #fafafa;
+    in property <color> border: #8a8a96;
     in property <float> scale: 1.0;
 }
 
-export struct PreviewLink {
-    text: string,
-    target: string,
-    external: bool,
-    tint: color,
+export struct TableCell {
+    rich: styled-text,
+    // 0 = left, 1 = center, 2 = right
+    align: int,
+}
+
+export struct TableRow {
+    cells: [TableCell],
+    header: bool,
 }
 
 export struct PreviewItem {
@@ -28,9 +33,12 @@ export struct PreviewItem {
     fill: color,
     accent: color,
     font-size: length,
-    bold: bool,
     mono: bool,
-    links: [PreviewLink],
+    // Rich (formatted) text; when false, `body` is shown as plain text.
+    is-rich: bool,
+    rich: styled-text,
+    rule: bool,
+    rows: [TableRow],
 }
 
 export struct DiagItem {
@@ -67,6 +75,7 @@ export component MainWindow inherits Window {
     in property <bool> dark-scheme: false;
     in property <length> editor-font-size: 14px;
     in-out property <string> editor-text: "";
+    in-out property <bool> diag-open: true;
     in property <[PreviewItem]> preview-items: [];
     in property <[DiagItem]> diagnostics: [];
     in property <[NavItem]> nav-items: [];
@@ -79,7 +88,7 @@ export component MainWindow inherits Window {
     callback search-edited(string);
     callback nav-clicked(string);
     callback link-clicked(string);
-    callback preview-link-clicked(string, bool);
+    callback rich-link-clicked(string);
     callback theme-clicked();
     callback font-smaller();
     callback font-larger();
@@ -93,7 +102,7 @@ export component MainWindow inherits Window {
 
     // Keyboard shortcuts (Ctrl, or Cmd on macOS):
     //   S save · O open file · Shift+O open folder · F search
-    //   + / - font size · Shift+T cycle theme
+    //   + / - font size · Shift+T cycle theme · J show/hide problems
     FocusScope {
         key-pressed(event) => {
             if (event.modifiers.control || event.modifiers.meta) {
@@ -104,6 +113,7 @@ export component MainWindow inherits Window {
                 if (event.text == "=" || event.text == "+") { root.font-larger(); return accept; }
                 if (event.text == "-") { root.font-smaller(); return accept; }
                 if (event.text == "T") { root.theme-clicked(); return accept; }
+                if (event.text == "j") { root.diag-open = !root.diag-open; return accept; }
             }
             return reject;
         }
@@ -168,7 +178,7 @@ export component MainWindow inherits Window {
                     }
 
                     Rectangle {
-                        height: 210px * Theme.scale;
+                        height: min(root.link-items.length * 26px * Theme.scale, 210px * Theme.scale);
                         background: Theme.panel-bg;
                         ListView {
                             for l in root.link-items: Rectangle {
@@ -217,11 +227,6 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Text {
-                        text: root.status;
-                        color: Theme.text;
-                        vertical-alignment: center;
-                    }
                     Button {
                         text: "A−";
                         clicked => { root.font-smaller(); }
@@ -260,7 +265,7 @@ export component MainWindow inherits Window {
                                         background: item.fill;
                                         border-radius: 6px;
                                         HorizontalLayout {
-                                            Rectangle {
+                                            if !item.rule: Rectangle {
                                                 width: 4px;
                                                 background: item.accent;
                                             }
@@ -274,37 +279,42 @@ export component MainWindow inherits Window {
                                                     font-size: 15px * Theme.scale;
                                                     wrap: word-wrap;
                                                 }
-                                                if item.body != "": Text {
+                                                if item.rule: Rectangle {
+                                                    height: 2px;
+                                                    background: item.accent;
+                                                }
+                                                if item.body != "" && !item.is-rich: Text {
                                                     text: item.body;
                                                     color: Theme.text;
                                                     wrap: word-wrap;
                                                     font-size: item.font-size;
-                                                    font-weight: item.bold ? 700 : 400;
                                                     font-family: item.mono ? "monospace" : "";
                                                 }
-                                                if item.links.length > 0: HorizontalLayout {
-                                                    spacing: 6px;
-                                                    alignment: start;
-                                                    for l in item.links: Rectangle {
-                                                        background: chip-touch.has-hover && l.target != "" ? Theme.hover : transparent;
-                                                        border-radius: 4px;
-                                                        HorizontalLayout {
-                                                            padding-left: 6px;
-                                                            padding-right: 6px;
-                                                            padding-top: 2px;
-                                                            padding-bottom: 2px;
-                                                            Text {
-                                                                text: l.text;
-                                                                color: l.tint;
-                                                                font-size: 13px * Theme.scale;
+                                                if item.is-rich: StyledText {
+                                                    text: item.rich;
+                                                    default-color: Theme.text;
+                                                    link-color: Theme.link;
+                                                    default-font-size: item.font-size;
+                                                    link-clicked(url) => { root.rich-link-clicked(url); }
+                                                }
+                                                if item.rows.length > 0: VerticalLayout {
+                                                    for row in item.rows: HorizontalLayout {
+                                                        for cell in row.cells: Rectangle {
+                                                            horizontal-stretch: 1;
+                                                            border-width: 1px;
+                                                            border-color: Theme.border;
+                                                            background: row.header ? Theme.hover : transparent;
+                                                            VerticalLayout {
+                                                                padding: 6px;
+                                                                StyledText {
+                                                                    text: cell.rich;
+                                                                    default-color: Theme.text;
+                                                                    link-color: Theme.link;
+                                                                    default-font-size: item.font-size;
+                                                                    horizontal-alignment: cell.align == 1 ? TextHorizontalAlignment.center : (cell.align == 2 ? TextHorizontalAlignment.right : TextHorizontalAlignment.left);
+                                                                    link-clicked(url) => { root.rich-link-clicked(url); }
+                                                                }
                                                             }
-                                                        }
-                                                        chip-touch := TouchArea {
-                                                            enabled: l.target != "";
-                                                            clicked => { root.preview-link-clicked(l.target, l.external); }
-                                                            accessible-role: button;
-                                                            accessible-label: l.text;
-                                                            accessible-action-default => { root.preview-link-clicked(l.target, l.external); }
                                                         }
                                                     }
                                                 }
@@ -312,24 +322,47 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                 }
+
+                                // Room to scroll the last card fully into view (the scroll area can under-measure wrapped text).
+                                Rectangle { height: max(80px, root.height * 0.3); }
                             }
                         }
                     }
                 }
 
-                // Diagnostics
-                Rectangle {
-                    height: 140px * Theme.scale;
-                    background: Theme.diag-bg;
-                    ListView {
-                        for d in root.diagnostics: Rectangle {
-                            height: 22px * Theme.scale;
-                            Text {
-                                x: 12px;
-                                text: d.text;
-                                color: d.tint;
-                                font-size: 12px * Theme.scale;
-                                vertical-alignment: center;
+                // Problems: a slim bar that can be collapsed; the list only takes the space it needs.
+                VerticalLayout {
+                    Rectangle {
+                        height: 26px * Theme.scale;
+                        background: Theme.diag-bg;
+                        Text {
+                            x: 12px;
+                            text: (root.diag-open ? "▾ " : "▸ ") + "Problems  ·  " + root.status;
+                            color: Theme.text;
+                            font-size: 12px * Theme.scale;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => { root.diag-open = !root.diag-open; }
+                            accessible-role: button;
+                            accessible-label: "Show or hide problems";
+                            accessible-action-default => { root.diag-open = !root.diag-open; }
+                        }
+                    }
+                    Rectangle {
+                        height: root.diag-open ? min(root.diagnostics.length * 22px * Theme.scale, 140px * Theme.scale) : 0px;
+                        clip: true;
+                        background: Theme.diag-bg;
+                        ListView {
+                            for d in root.diagnostics: Rectangle {
+                                height: 22px * Theme.scale;
+                                Text {
+                                    x: 12px;
+                                    text: d.text;
+                                    color: d.tint;
+                                    font-size: 12px * Theme.scale;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }

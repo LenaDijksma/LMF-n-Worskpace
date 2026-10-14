@@ -30,7 +30,9 @@ pub mod model;
 pub mod parser;
 pub mod preview;
 pub mod registry;
+pub mod richtext;
 pub mod span;
+pub mod structure;
 pub mod validate;
 
 pub use diagnostics::{Diagnostic, Severity};

@@ -1,12 +1,13 @@
 //! In-memory workspace index. Pure: no filesystem access, so it is easy to test.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use lmf_core::frontmatter::{FrontMatter, MetaValue};
 use lmf_core::links::{extract_links, Link, LinkKind};
 use lmf_core::parse;
-use lmf_core::preview::{build_cards, CardKind};
 use lmf_core::span::Span;
+use lmf_core::structure::{block_ids, block_text, find_heading, headings as doc_headings, section_span};
 
 const NOTE_EXTENSIONS: &[&str] = &[".md", ".markdown", ".lmf"];
 
@@ -25,6 +26,8 @@ pub struct Note {
     pub aliases: Vec<String>,
     pub tags: Vec<String>,
     pub headings: Vec<String>,
+    /// Block ids (`^id`) defined in the note, plus ids of extension blocks.
+    pub block_ids: Vec<String>,
     /// Outgoing links as written (unresolved).
     pub links: Vec<Link>,
     pub text: String,
@@ -56,6 +59,49 @@ pub struct SearchHit {
     pub snippet: String,
     /// 1-based line number of the snippet, or 0.
     pub line: usize,
+}
+
+/// Maximum nesting of includes (a note including a note including a note …).
+pub const MAX_INCLUDE_DEPTH: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expansion {
+    /// Index of the included note.
+    pub note: usize,
+    pub path: String,
+    pub title: String,
+    /// The included text (LMF/Markdown), without the `^id` marker for block includes.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncludeError {
+    MissingDocument(String),
+    Ambiguous(Vec<String>),
+    MissingSection(String),
+    MissingBlock(String),
+    /// The include would (indirectly) include itself; the payload shows the chain.
+    Cycle(String),
+    TooDeep,
+}
+
+impl fmt::Display for IncludeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IncludeError::MissingDocument(d) => write!(f, "document \"{}\" not found", d),
+            IncludeError::Ambiguous(paths) => {
+                write!(f, "document name is ambiguous ({})", paths.join(", "))
+            }
+            IncludeError::MissingSection(s) => write!(f, "section \"{}\" not found", s),
+            IncludeError::MissingBlock(b) => write!(f, "block \"{}\" not found", b),
+            IncludeError::Cycle(chain) => write!(f, "include cycle: {}", chain),
+            IncludeError::TooDeep => write!(
+                f,
+                "includes are nested more than {} levels deep",
+                MAX_INCLUDE_DEPTH
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -113,12 +159,13 @@ impl Workspace {
         }
     }
 
-    /// Whether the heading named by the link fragment exists in `target`. Block fragments are
-    /// not indexed yet and are reported as present.
+    /// Whether the heading or block named by the link fragment exists in `target`.
     pub fn fragment_exists(&self, target: usize, link: &Link) -> bool {
         use lmf_core::links::Fragment;
         match (&link.fragment, self.notes.get(target)) {
-            (Fragment::None, _) | (Fragment::Block(_), _) => true,
+            (Fragment::None, _) => true,
+            (Fragment::Block(id), Some(n)) => n.block_ids.iter().any(|b| b == id),
+            (Fragment::Block(_), None) => false,
             (Fragment::Heading(h), Some(n)) => {
                 let h = h.to_lowercase();
                 n.headings.iter().any(|x| x.to_lowercase() == h)
@@ -247,6 +294,87 @@ impl Workspace {
         self.backlinks = backlinks;
     }
 
+    // --- transclusion ------------------------------------------------------------------
+
+    /// Expands an `lmf:include`: finds the target document and returns the requested part
+    /// (a section, a block, or the whole body without front matter) as LMF/Markdown text.
+    ///
+    /// `chain` lists the notes currently being expanded, outermost first; the last entry is the
+    /// note that contains the include (its folder and aliases are used to resolve `document`).
+    /// Cycles and excessive depth are reported as errors, never followed.
+    pub fn expand_include(
+        &self,
+        chain: &[usize],
+        document: &str,
+        section: Option<&str>,
+        block: Option<&str>,
+    ) -> Result<Expansion, IncludeError> {
+        if chain.len() > MAX_INCLUDE_DEPTH {
+            return Err(IncludeError::TooDeep);
+        }
+        if self.notes.is_empty() || document.trim().is_empty() {
+            return Err(IncludeError::MissingDocument(document.to_string()));
+        }
+        let from = chain.last().copied().unwrap_or(0);
+        let link = Link {
+            kind: LinkKind::Wiki,
+            target: document.to_string(),
+            fragment: lmf_core::links::Fragment::None,
+            label: None,
+            span: Span::new(0, 0),
+        };
+        let target = match self.resolve(from, &link) {
+            Resolution::Resolved(i) => i,
+            Resolution::Ambiguous(c) => {
+                return Err(IncludeError::Ambiguous(
+                    c.iter().map(|&i| self.notes[i].path.clone()).collect(),
+                ))
+            }
+            Resolution::Unresolved => {
+                return Err(IncludeError::MissingDocument(document.to_string()))
+            }
+        };
+        if chain.contains(&target) {
+            let mut names: Vec<String> = chain
+                .iter()
+                .filter_map(|&i| self.notes.get(i).map(|n| n.title.clone()))
+                .collect();
+            names.push(self.notes[target].title.clone());
+            return Err(IncludeError::Cycle(names.join(" \u{2192} ")));
+        }
+
+        let note = &self.notes[target];
+        let doc = parse(&note.text);
+        let section = section.map(|s| s.trim()).filter(|s| !s.is_empty());
+        let block = block.map(|b| b.trim()).filter(|b| !b.is_empty());
+        let text = if let Some(sec) = section {
+            let outline = doc_headings(&doc);
+            let i = find_heading(&outline, sec)
+                .ok_or_else(|| IncludeError::MissingSection(sec.to_string()))?;
+            doc.text(section_span(&doc, &outline, i)).replace("\r\n", "\n")
+        } else if let Some(id) = block {
+            let ids = block_ids(&doc);
+            let found = ids
+                .iter()
+                .find(|b| b.id == id)
+                .ok_or_else(|| IncludeError::MissingBlock(id.to_string()))?;
+            block_text(&doc, found)
+        } else {
+            let start = doc.front_matter.as_ref().map(|fm| fm.span.end).unwrap_or(0);
+            doc.source
+                .get(start..)
+                .unwrap_or("")
+                .trim()
+                .replace("\r\n", "\n")
+        };
+        Ok(Expansion {
+            note: target,
+            path: note.path.clone(),
+            title: note.title.clone(),
+            text,
+        })
+    }
+
     // --- search ------------------------------------------------------------------------
 
     /// All whitespace-separated terms must match (case-insensitively) somewhere in a note's
@@ -324,7 +452,7 @@ impl Workspace {
 fn build_note(src: NoteSource) -> Note {
     let doc = parse(&src.text);
     let stem = file_stem(&src.path).to_string();
-    let cards = build_cards(&doc);
+    let outline = doc_headings(&doc);
 
     let fm_title = doc
         .front_matter
@@ -334,15 +462,17 @@ fn build_note(src: NoteSource) -> Note {
             MetaValue::Str(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
             _ => None,
         });
-    let headings: Vec<String> = cards
+    let headings: Vec<String> = outline.iter().map(|h| h.text.clone()).collect();
+    let first_h1 = outline
         .iter()
-        .filter(|c| matches!(c.kind, CardKind::Heading(_)))
-        .map(|c| c.body.clone())
-        .collect();
-    let first_h1 = cards
-        .iter()
-        .find(|c| c.kind == CardKind::Heading(1) && !c.body.is_empty())
-        .map(|c| c.body.clone());
+        .find(|h| h.level == 1 && !h.text.is_empty())
+        .map(|h| h.text.clone());
+    let mut ids: Vec<String> = block_ids(&doc).into_iter().map(|b| b.id).collect();
+    for d in doc.directives() {
+        if let Some(a) = d.attr_str("id") {
+            ids.push(a.to_string());
+        }
+    }
     let title = fm_title.or(first_h1).unwrap_or(stem);
 
     let (aliases, tags) = match &doc.front_matter {
@@ -357,6 +487,7 @@ fn build_note(src: NoteSource) -> Note {
         aliases,
         tags,
         headings,
+        block_ids: ids,
         links,
         text: src.text,
         text_lower,
@@ -595,6 +726,91 @@ mod tests {
         let a = idx(&w, "a.md");
         // b.md ([[alpha]]), sub/c.md ([up](../a.md)) and new.md ([[Alpha]])
         assert_eq!(w.backlinks(a).len(), 3);
+    }
+
+    fn include_ws() -> Workspace {
+        ws(&[
+            ("a.md", "# A\n\n:::lmf:include {document=\"b\" section=\"Milestones\"}\nfallback\n:::\n"),
+            (
+                "b.md",
+                "---\ntitle: B\n---\n\n# B\n\n## Milestones\n\nM1 ^m1\n\n### Sub\n\ndeep\n\n## Other\n\nnope\n",
+            ),
+            ("c.md", ":::lmf:include {document=\"d\"}\n:::\n"),
+            ("d.md", ":::lmf:include {document=\"c\"}\n:::\n"),
+            ("x/Plan.md", "x\n"),
+            ("y/Plan.md", "y\n"),
+        ])
+    }
+
+    #[test]
+    fn include_section_block_and_whole_document() {
+        let w = include_ws();
+        let a = idx(&w, "a.md");
+        let sec = w.expand_include(&[a], "b", Some("Milestones"), None).unwrap();
+        assert_eq!(sec.path, "b.md");
+        assert!(sec.text.starts_with("## Milestones"));
+        assert!(sec.text.contains("M1") && sec.text.contains("### Sub") && sec.text.contains("deep"));
+        assert!(!sec.text.contains("nope"));
+
+        let blk = w.expand_include(&[a], "b", None, Some("m1")).unwrap();
+        assert_eq!(blk.text, "M1");
+
+        let whole = w.expand_include(&[a], "B", None, None).unwrap();
+        assert!(whole.text.starts_with("# B"));
+        assert!(whole.text.contains("nope"));
+        assert!(!whole.text.contains("title: B"));
+    }
+
+    #[test]
+    fn include_errors() {
+        let w = include_ws();
+        let a = idx(&w, "a.md");
+        assert_eq!(
+            w.expand_include(&[a], "b", Some("Nope"), None),
+            Err(IncludeError::MissingSection("Nope".to_string()))
+        );
+        assert_eq!(
+            w.expand_include(&[a], "b", None, Some("zz")),
+            Err(IncludeError::MissingBlock("zz".to_string()))
+        );
+        assert_eq!(
+            w.expand_include(&[a], "ghost", None, None),
+            Err(IncludeError::MissingDocument("ghost".to_string()))
+        );
+        assert!(matches!(
+            w.expand_include(&[a], "Plan", None, None),
+            Err(IncludeError::Ambiguous(ref p)) if p.len() == 2
+        ));
+    }
+
+    #[test]
+    fn include_cycles_and_depth_are_stopped() {
+        let w = include_ws();
+        let c = idx(&w, "c.md");
+        let d = idx(&w, "d.md");
+        // c includes d (fine), d includes c while c is already being expanded: cycle.
+        assert!(w.expand_include(&[c], "d", None, None).is_ok());
+        let err = w.expand_include(&[c, d], "c", None, None).unwrap_err();
+        assert!(matches!(err, IncludeError::Cycle(_)));
+        assert!(err.to_string().contains("cycle"));
+        // A note including itself.
+        assert!(matches!(
+            w.expand_include(&[c], "c", None, None),
+            Err(IncludeError::Cycle(_))
+        ));
+        // Excessive depth.
+        let deep = vec![c; MAX_INCLUDE_DEPTH + 1];
+        assert_eq!(w.expand_include(&deep, "d", None, None), Err(IncludeError::TooDeep));
+    }
+
+    #[test]
+    fn block_fragments_are_checked() {
+        let w = ws(&[("a.md", "[[b#block:m1]] [[b#block:nope]]\n"), ("b.md", "Text ^m1\n")]);
+        let a = idx(&w, "a.md");
+        let b = idx(&w, "b.md");
+        let out = w.outgoing(a);
+        assert!(w.fragment_exists(b, &out[0].0));
+        assert!(!w.fragment_exists(b, &out[1].0));
     }
 
     #[test]

@@ -11,5 +11,8 @@
 pub mod index;
 pub mod scan;
 
-pub use index::{Backlink, Note, NoteSource, Resolution, SearchHit, Workspace};
+pub use index::{
+    Backlink, Expansion, IncludeError, Note, NoteSource, Resolution, SearchHit, Workspace,
+    MAX_INCLUDE_DEPTH,
+};
 pub use scan::{scan, ScanResult, Skipped};

@@ -185,6 +185,51 @@ fn render_directive(
             });
             render_titled(doc, dir, "Tab", opts, losses)
         }
+        ("lmf", "math") => {
+            losses.push(Loss {
+                level: LossLevel::Degraded,
+                message: "`lmf:math` exported as a fenced `math` block; renderers without math support show the LaTeX source"
+                    .to_string(),
+                span: dir.span,
+            });
+            fenced("math", &raw_body(doc, dir))
+        }
+        ("lmf", "diagram") => {
+            let kind = dir.attr_str("type").unwrap_or("text").to_string();
+            losses.push(Loss {
+                level: LossLevel::Degraded,
+                message: format!(
+                    "`lmf:diagram` ({}) exported as a fenced `{}` block; renderers without diagram support show the source",
+                    kind, kind
+                ),
+                span: dir.span,
+            });
+            fenced(&kind, &raw_body(doc, dir))
+        }
+        ("lmf", "include") => {
+            let document = dir.attr_str("document").unwrap_or("?");
+            let mut what = format!("**{}**", document);
+            if let Some(s) = dir.attr_str("section") {
+                what.push_str(&format!(" \u{00a7} {}", s));
+            }
+            if let Some(b) = dir.attr_str("block") {
+                what.push_str(&format!(" \u{00a7} block {}", b));
+            }
+            losses.push(Loss {
+                level: LossLevel::Degraded,
+                message: format!(
+                    "`lmf:include` of {} is not expanded in plain Markdown; its fallback text is used",
+                    what
+                ),
+                span: dir.span,
+            });
+            let fallback = render_blocks(doc, &dir.body, opts, losses);
+            if fallback.is_empty() {
+                format!("> Included content: {}", what)
+            } else {
+                fallback
+            }
+        }
         _ => {
             let name = dir.qualified_name();
             match opts.unknown {
@@ -229,6 +274,26 @@ fn render_titled(
     } else {
         format!("**{}**\n\n{}", title, body)
     }
+}
+
+/// The source text of a directive's body (blocks joined by blank lines).
+fn raw_body(doc: &Document, dir: &Directive) -> String {
+    dir.body
+        .iter()
+        .map(|b| normalize(doc.text(b.span())))
+        .collect::<Vec<String>>()
+        .join("\n\n")
+}
+
+/// A fenced code block that cannot be broken out of by its own content.
+fn fenced(lang: &str, body: &str) -> String {
+    let longest = body
+        .lines()
+        .map(|l| l.trim_start().chars().take_while(|&c| c == '`').count())
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    format!("{}{}\n{}\n{}", fence, lang, body, fence)
 }
 
 fn quote_block(text: &str) -> String {
@@ -346,6 +411,29 @@ mod tests {
         let c = export(src, &ExportOptions::default());
         assert_eq!(c.output, "**D**\n\n> **Tip**\n>\n> hi\n");
         assert_eq!(c.losses.len(), 2);
+    }
+
+    #[test]
+    fn math_diagram_include_fallbacks() {
+        let m = export(":::lmf:math {format=\"latex\"}\n\\int_0^1 x\\,dx\n:::\n", &ExportOptions::default());
+        assert_eq!(m.output, "```math\n\\int_0^1 x\\,dx\n```\n");
+        let d = export(":::lmf:diagram {type=\"mermaid\"}\nA --> B\n:::\n", &ExportOptions::default());
+        assert_eq!(d.output, "```mermaid\nA --> B\n```\n");
+        let i = export(
+            ":::lmf:include {document=\"Plan\" section=\"Goals\"}\nSee the plan.\n:::\n",
+            &ExportOptions::default(),
+        );
+        assert_eq!(i.output, "See the plan.\n");
+        let empty = export(":::lmf:include {document=\"Plan\"}\n:::\n", &ExportOptions::default());
+        assert_eq!(empty.output, "> Included content: **Plan**\n");
+        assert!(m.losses.len() == 1 && d.losses.len() == 1 && i.losses.len() == 1);
+    }
+
+    #[test]
+    fn fenced_blocks_cannot_be_broken_out_of() {
+        let c = export(":::lmf:diagram {type=\"mermaid\"}\n```\nsneaky\n```\n:::\n", &ExportOptions::default());
+        assert!(c.output.starts_with("````mermaid\n"));
+        assert!(c.output.trim_end().ends_with("````"));
     }
 
     #[test]

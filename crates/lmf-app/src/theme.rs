@@ -67,6 +67,7 @@ impl ThemeKind {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct Colors {
     pub window_bg: Rgb,
@@ -78,6 +79,8 @@ pub struct Colors {
     pub text: Rgb,
     pub link: Rgb,
     pub diag_bg: Rgb,
+    /// Lines and borders (tables, rules); at least 3:1 against the panel (WCAG non-text contrast).
+    pub border: Rgb,
     pub error: Rgb,
     pub warning: Rgb,
     pub info: Rgb,
@@ -117,6 +120,7 @@ const LIGHT: Colors = Colors {
     text: rgb(0x1f1f1f),
     link: rgb(0x1565c0),
     diag_bg: rgb(0xfafafa),
+    border: rgb(0x8a8a96),
     error: rgb(0xb71c1c),
     warning: rgb(0xa34100),
     info: rgb(0x37474f),
@@ -153,6 +157,7 @@ const DARK: Colors = Colors {
     text: rgb(0xe6e6e6),
     link: rgb(0x7ab8ff),
     diag_bg: rgb(0x1b1b1b),
+    border: rgb(0x7a7a84),
     error: rgb(0xff8a80),
     warning: rgb(0xffb74d),
     info: rgb(0xb0bec5),
@@ -189,6 +194,7 @@ const HIGH_CONTRAST: Colors = Colors {
     text: rgb(0xffffff),
     link: rgb(0x66d9ff),
     diag_bg: rgb(0x000000),
+    border: rgb(0xffffff),
     error: rgb(0xff7b7b),
     warning: rgb(0xffd400),
     info: rgb(0xffffff),
@@ -280,6 +286,14 @@ mod tests {
                 let r = contrast(fg, bg);
                 assert!(r >= n, "{:?} {}: {:.2} < {}", t, label, r, n);
             }
+        }
+    }
+
+    #[test]
+    fn borders_are_visible() {
+        for t in ALL {
+            let c = t.colors();
+            assert!(contrast(c.border, c.panel_bg) >= 3.0, "{:?} border", t);
         }
     }
 

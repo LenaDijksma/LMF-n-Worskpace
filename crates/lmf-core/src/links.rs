@@ -177,7 +177,7 @@ fn find_run(bytes: &[u8], from: usize, run: usize) -> Option<usize> {
     None
 }
 
-fn parse_wiki(inner: &str, start: usize, end: usize) -> Option<Link> {
+pub(crate) fn parse_wiki(inner: &str, start: usize, end: usize) -> Option<Link> {
     if inner.trim().is_empty() || inner.contains('[') {
         return None;
     }
@@ -199,7 +199,7 @@ fn parse_wiki(inner: &str, start: usize, end: usize) -> Option<Link> {
     })
 }
 
-fn split_fragment(s: &str) -> (&str, Fragment) {
+pub(crate) fn split_fragment(s: &str) -> (&str, Fragment) {
     match s.split_once('#') {
         None => (s.trim(), Fragment::None),
         Some((t, f)) => {
@@ -265,14 +265,14 @@ fn parse_md_link(line: &str, start: usize, line_start: usize, ext: bool) -> Opti
     ))
 }
 
-fn is_http_url(s: &str) -> bool {
+pub(crate) fn is_http_url(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     (lower.starts_with("http://") || lower.starts_with("https://"))
         && lower.len() > 8
         && !s.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-fn is_external(dest: &str) -> bool {
+pub(crate) fn is_external(dest: &str) -> bool {
     let lower = dest.to_ascii_lowercase();
     lower.starts_with("http://")
         || lower.starts_with("https://")
@@ -281,7 +281,7 @@ fn is_external(dest: &str) -> bool {
         || lower.contains("://")
 }
 
-fn is_note_path(path: &str) -> bool {
+pub(crate) fn is_note_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".md") || lower.ends_with(".lmf") || lower.ends_with(".markdown")
 }

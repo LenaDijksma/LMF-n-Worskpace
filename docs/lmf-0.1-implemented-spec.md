@@ -59,6 +59,23 @@ Every directive may carry `id` (letters, digits, `_ - . :`; unique per document,
 | `lmf:details` | `title`, `open` (bool) | body required |
 | `lmf:tabs` | – | may contain only `lmf:tab` |
 | `lmf:tab` | `title` (**required**) | must be directly inside `lmf:tabs` |
+| `lmf:include` | `document` (**required**), `section`, `block` (not both) | body (optional) is the fallback text; see §4.1 |
+| `lmf:math` | `format` ∈ latex | body required; source is shown, rendering is optional |
+| `lmf:diagram` | `type` (**required**) ∈ mermaid | body required; source is never executed; rendering is optional |
+
+### 4.1 Block IDs and transclusion
+
+A **block ID** is a marker `^id` at the end of a line (it labels that paragraph) or alone on a line
+(it labels the block above). IDs are `^` plus 2+ characters of `[A-Za-z0-9_-]` starting with an
+alphanumeric, after whitespace or at line start (`x^2` is not an ID). Markers stay in the text.
+IDs share one namespace with directive `id` attributes; duplicates are `LMF005`.
+Links use `[[Doc#block:id]]`; an include uses `block="id"`.
+
+`lmf:include {document="…" section="…"}` pulls the named heading's section (the heading and
+everything up to the next heading of the same or a higher level), or one block, or the whole
+document body into the preview. `document` resolves like a wikilink (ADR-011). Includes may nest
+up to 4 levels; cycles and missing targets are shown as warnings with the author's fallback text
+and are never followed. Plain-Markdown export uses the fallback text (ADR-014).
 
 Everything else is an **unknown extension**: preserved verbatim, never executed, `LMF006`.
 

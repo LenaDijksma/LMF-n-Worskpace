@@ -13,9 +13,10 @@ The end product is a **native desktop application with a GUI** (not a website), 
 | `crates/lmf-workspace` | Workspace index: folder scan, link resolution, backlinks, search. Pure logic plus one scanner module. |
 | `crates/lmf-app`  | **Phase 2:** the `lovely` desktop app (Slint): folder navigation, search, editor, preview, diagnostics, links/backlinks, autosave. |
 
-> **Status.** Phase 1 (`lmf-core`, `lmf-cli`) and the first Phase 2 slice of `lmf-app` build and
-> run. The rest of Phase 2 (`lmf-workspace`, links, sidebar, search, autosave, themes, shortcuts,
-> clickable preview links) was written without a compiler and has not been built yet.
+> **Status.** Phases 1–2 build and run. The newest changes (rich-text preview with bold/italic,
+> lists, tables, quotes and clickable links; collapsible problems bar; block IDs; `lmf:include`,
+> `lmf:math`, `lmf:diagram`) were written without a compiler and have not been built yet. Still to
+> do in Phase 3: images and attachments.
 
 ## Build and test
 
@@ -47,7 +48,9 @@ lmf ast notes.lmf                        # show the parsed structure
   awareness, and recovery from malformed or unclosed blocks (content is never dropped).
 * **Unknown extensions** are preserved verbatim and reported as `LMF006` info (typos inside the
   reserved `lmf:` namespace are warnings).
-* **Built-in extensions:** `lmf:callout`, `lmf:details`, `lmf:tabs` / `lmf:tab`.
+* **Built-in extensions:** `lmf:callout`, `lmf:details`, `lmf:tabs` / `lmf:tab`, `lmf:include`
+  (transclusion), `lmf:math`, `lmf:diagram` (math and diagram source is shown, never executed).
+* **Block IDs** (`^id`) for linking to and including single blocks.
 * **Validator** with stable diagnostic codes `LMF001`–`LMF017` (see `docs/lmf-0.1-implemented-spec.md`).
 * **Converters** with loss reporting: LMF → plain Markdown, Markdown (GitHub alerts) → LMF.
 * **Fixture corpus** in `crates/lmf-core/tests/fixtures/` (`.lmf` + `.expect` per case).
@@ -57,8 +60,9 @@ lmf ast notes.lmf                        # show the parsed structure
 * **Open folder…** scans for `.md`, `.markdown` and `.lmf` files (hidden files and symlinks are
   skipped; unreadable/non-UTF-8/oversized files are counted, not hidden). Click a note to open it.
 * **Search** box: all terms must match title, aliases, tags, headings, path or text; best matches first.
-* **Editor + structural preview + live diagnostics.** Inline Markdown (bold, links) is shown as typed
-  until the Markdown engine lands.
+* **Editor + formatted preview + live diagnostics.** The preview renders bold, italic, strikethrough,
+  inline code, links, bullet/numbered/task lists, **tables**, block quotes, rules and headings (ADR-015).
+  Links in the preview are clickable.
 * **Links and backlinks panel** for the open note: `[[wikilinks]]` and relative Markdown links,
   resolved case-insensitively by file name, title or alias (ADR-011). Ambiguous and missing targets
   are flagged, never guessed. Click a link or backlink to jump.
@@ -66,6 +70,9 @@ lmf ast notes.lmf                        # show the parsed structure
   disk, readable and editable by any other tool.
 * **Conflict detection:** if a file changed on disk since you opened it, autosave stops and says
   so; a manual Save asks before overwriting.
+* **Includes:** `lmf:include` blocks show the included section or block in place (nested up to 4
+  levels; cycles and missing targets are reported, with your fallback text kept).
+* **Collapsible problems bar:** click it or press Ctrl+J; the panel only takes the space it needs.
 * **Safe closing:** closing or switching files saves first, or asks before discarding an unsaved,
   never-saved document.
 
@@ -86,8 +93,9 @@ reports missing libraries.
 
 ## What it deliberately does not do yet
 
-* It does **not** parse inline Markdown (emphasis, links, tables…). Markdown regions are opaque
-  blocks until the Markdown baseline engine is chosen (ADR-001). Nothing is lost meanwhile.
+* `lmf-core` still treats Markdown regions as opaque blocks (ADR-001). The preview's formatting comes
+  from a block/inline preparation layer plus Slint's `StyledText` (ADR-015), not a full CommonMark
+  engine: footnotes, definition lists, reference-style links and nested quotes are not rendered.
 * Search, boards, API blocks, automation or sync (Phases 3–8); the app is only the first Phase 2 slice.
 * Directives inside list items or blockquotes are not recognized (top level and directive
   bodies only).
@@ -98,7 +106,7 @@ reports missing libraries.
 Recorded in `docs/adr/`. All are reversible and marked *proposed*.
 
 * ADR-001 Markdown baseline · ADR-002 Directive grammar · ADR-003 Metadata syntax
-* ADR-005 Source-preserving parser · ADR-009 Native desktop GUI · ADR-010 Slint toolkit · ADR-011 Links and search · ADR-012 Safe content and accessibility
+* ADR-005 Source-preserving parser · ADR-009 Native desktop GUI · ADR-010 Slint toolkit · ADR-011 Links and search · ADR-012 Safe content and accessibility · ADR-013 Block IDs · ADR-014 Transclusion · ADR-015 Rich preview
 
 Licensing is undecided (spec open decision 32), so the crates are `publish = false` and carry no
 license field.

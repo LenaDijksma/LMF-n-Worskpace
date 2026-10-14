@@ -1,0 +1,3 @@
+:::lmf:diagram {type="python"}
+print("never executed")
+:::

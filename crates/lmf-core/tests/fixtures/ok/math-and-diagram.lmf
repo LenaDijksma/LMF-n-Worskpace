@@ -1,0 +1,11 @@
+Inline math stays plain text: \(a^2 + b^2 = c^2\)
+
+:::lmf:math {format="latex"}
+\int_0^1 x^2\,dx = \frac{1}{3}
+:::
+
+:::lmf:diagram {type="mermaid"}
+flowchart TD
+    A[Write source] --> B[Parse document]
+    B --> C[Build document model]
+:::

@@ -23,6 +23,20 @@ pub fn validate(doc: &Document) -> Vec<Diagnostic> {
     }
     let mut ids: HashMap<String, Span> = HashMap::new();
     validate_blocks(&doc.blocks, None, &mut ids, &mut out);
+
+    // Block IDs (`^id`) share one namespace with directive `id` attributes.
+    for b in crate::structure::block_ids(doc) {
+        match ids.get(&b.id).copied() {
+            Some(first) => out.push(Diagnostic::error(
+                codes::DUPLICATE_ID,
+                format!("duplicate id `{}`; first used at byte offset {}", b.id, first.start),
+                b.marker,
+            )),
+            None => {
+                ids.insert(b.id.clone(), b.marker);
+            }
+        }
+    }
     sort_diagnostics(&mut out);
     out
 }
@@ -316,6 +330,16 @@ fn check_known(
         }
     }
 
+    for (a, b) in spec.exclusive {
+        if dir.attr(a).is_some() && dir.attr(b).is_some() {
+            out.push(Diagnostic::error(
+                codes::INVALID_ATTRIBUTE_VALUE,
+                format!("`{}` accepts either `{}` or `{}`, not both", qname, a, b),
+                dir.open_span,
+            ));
+        }
+    }
+
     if dir.attrs_valid {
         for aspec in spec.attrs {
             if aspec.required && !dir.attrs.iter().any(|a| a.key == aspec.name) {
@@ -461,6 +485,37 @@ mod tests {
         assert_eq!(codes_of(":::vendor:thing\nx\n:::\n"), vec!["LMF006"]);
         let d = check(&parse(":::lmf:calout\nx\n:::\n"));
         assert_eq!(d[0].severity, crate::Severity::Warning);
+    }
+
+    #[test]
+    fn include_rules() {
+        assert!(codes_of(":::lmf:include {document=\"Plan\" section=\"Goals\"}\nfallback\n:::\n").is_empty());
+        assert!(codes_of(":::lmf:include {document=\"Plan\"}\n:::\n").is_empty());
+        assert_eq!(codes_of(":::lmf:include {section=\"Goals\"}\n:::\n"), vec!["LMF014"]);
+        assert_eq!(
+            codes_of(":::lmf:include {document=\"P\" section=\"a\" block=\"b\"}\n:::\n"),
+            vec!["LMF009"]
+        );
+    }
+
+    #[test]
+    fn math_and_diagram_rules() {
+        assert!(codes_of(":::lmf:math {format=\"latex\"}\nx\n:::\n").is_empty());
+        assert!(codes_of(":::lmf:math\nx\n:::\n").is_empty());
+        assert_eq!(codes_of(":::lmf:math {format=\"tex\"}\nx\n:::\n"), vec!["LMF009"]);
+        assert!(codes_of(":::lmf:diagram {type=\"mermaid\"}\nA-->B\n:::\n").is_empty());
+        assert_eq!(codes_of(":::lmf:diagram\nA-->B\n:::\n"), vec!["LMF014"]);
+        assert_eq!(codes_of(":::lmf:diagram {type=\"python\"}\nx\n:::\n"), vec!["LMF009"]);
+    }
+
+    #[test]
+    fn block_ids_must_be_unique_across_blocks_and_directives() {
+        assert!(codes_of("One ^aa\n\nTwo ^bb\n").is_empty());
+        assert_eq!(codes_of("One ^aa\n\nTwo ^aa\n"), vec!["LMF005"]);
+        assert_eq!(
+            codes_of(":::lmf:callout {id=\"aa\"}\nx\n:::\n\nPara ^aa\n"),
+            vec!["LMF005"]
+        );
     }
 
     #[test]

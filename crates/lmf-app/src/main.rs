@@ -10,23 +10,26 @@ mod external;
 mod settings;
 mod theme;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
-use lmf_core::links::{extract_all_links, Fragment, Link, LinkKind};
-use lmf_core::preview::{build_cards, Card, CardKind};
+use lmf_core::links::{Fragment, Link, LinkKind};
+use lmf_core::preview::{build_cards, cards_from_text, Align, Card, CardKind, TableData};
+use lmf_core::richtext::{decode_href, display_markdown, encode_href, LinkTarget};
 use lmf_core::{check, parse, LineIndex, Severity};
 use lmf_workspace::{scan, NoteSource, Resolution, Workspace};
-use slint::{Color, ComponentHandle, ModelRc, VecModel};
+use slint::{Color, ComponentHandle, Model, ModelRc, StyledText, VecModel};
 
 use settings::{step_scale, Settings};
-use theme::{Colors, Rgb};
+use theme::{Colors, Rgb, ThemeKind};
 
 slint::include_modules!();
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(2);
+/// The preview is rebuilt this long after the last keystroke, not on every key.
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(250);
 
 const SAMPLE: &str = "\
 ---
@@ -72,6 +75,14 @@ struct App {
     /// Modification time and size of the file as we last read or wrote it (conflict detection).
     disk_stamp: Option<(SystemTime, u64)>,
     query: String,
+    /// The preview list shown by the window. Updated row by row, never replaced wholesale.
+    preview_model: Rc<VecModel<PreviewItem>>,
+    /// The cards the preview currently shows (for diffing against the next version).
+    last_cards: RefCell<Vec<Card>>,
+    /// What the shown rows were rendered with: (theme, text scale bits, workspace revision, note).
+    last_style: Cell<Option<(ThemeKind, u32, u64, usize)>>,
+    /// Incremented whenever the workspace index changes, so link states are re-rendered.
+    revision: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -90,6 +101,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let settings = Settings::load();
     apply_theme(&window, &settings);
 
+    let preview_model: Rc<VecModel<PreviewItem>> = Rc::new(VecModel::default());
+    window.set_preview_items(ModelRc::from(preview_model.clone()));
     let state = Rc::new(RefCell::new(App {
         settings,
         root: None,
@@ -98,6 +111,10 @@ fn main() -> Result<(), slint::PlatformError> {
         dirty: false,
         disk_stamp: None,
         query: String::new(),
+        preview_model: preview_model.clone(),
+        last_cards: RefCell::new(Vec::new()),
+        last_style: Cell::new(None),
+        revision: 0,
     }));
 
     // Start with a file or folder from the command line, else the last folder, else the sample.
@@ -132,20 +149,32 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // --- editing --------------------------------------------------------------------------
+    // Typing only marks the document dirty; the (comparatively expensive) preview and problem
+    // list are rebuilt once typing pauses.
+    let preview_timer = slint::Timer::default();
     window.on_text_edited({
         let weak = window.as_weak();
         let state = state.clone();
-        move |text| {
+        move |_text| {
             let Some(w) = weak.upgrade() else { return };
             let Ok(mut st) = state.try_borrow_mut() else { return };
             st.dirty = true;
-            refresh(&w, text.as_str(), &st);
             let message = if st.path.is_some() {
                 "Unsaved changes (autosave on)"
             } else {
                 "Unsaved new document"
             };
             w.set_save_status(message.into());
+            drop(st);
+
+            let weak = weak.clone();
+            let state = state.clone();
+            preview_timer.start(slint::TimerMode::SingleShot, PREVIEW_DEBOUNCE, move || {
+                let Some(w) = weak.upgrade() else { return };
+                let Ok(st) = state.try_borrow() else { return };
+                let text = w.get_editor_text();
+                refresh(&w, text.as_str(), &st);
+            });
         }
     });
 
@@ -224,16 +253,16 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
-    window.on_preview_link_clicked({
+    window.on_rich_link_clicked({
         let weak = window.as_weak();
         let state = state.clone();
-        move |target, is_external| {
+        move |url| {
             let Some(w) = weak.upgrade() else { return };
             let Ok(mut st) = state.try_borrow_mut() else { return };
-            if is_external {
-                open_external(&w, target.as_str());
+            if let Some(path) = decode_href(url.as_str()) {
+                go_to(&w, &mut st, &path);
             } else {
-                go_to(&w, &mut st, target.as_str());
+                open_external(&w, url.as_str());
             }
         }
     });
@@ -386,6 +415,7 @@ fn open_folder(w: &MainWindow, app: &mut App, dir: PathBuf) {
             let count = result.notes.len();
             let skipped = result.skipped.len();
             app.workspace = Some(Workspace::build(result.notes));
+            app.revision += 1;
             app.root = Some(dir.clone());
             app.query.clear();
             if let Some(s) = dir.to_str() {
@@ -490,6 +520,7 @@ fn write_current(w: &MainWindow, app: &mut App, autosave: bool) -> Result<WriteO
                     path: rel,
                     text: text.to_string(),
                 });
+                app.revision += 1;
             }
         }
     }
@@ -583,6 +614,7 @@ fn apply_theme(w: &MainWindow, settings: &Settings) {
     theme.set_text(col(c.text));
     theme.set_link(col(c.link));
     theme.set_diag_bg(col(c.diag_bg));
+    theme.set_border(col(c.border));
     theme.set_scale(settings.font_scale);
     w.set_theme_name(settings.theme.name().into());
     w.set_dark_scheme(settings.theme.is_dark());
@@ -606,14 +638,9 @@ fn refresh(w: &MainWindow, text: &str, app: &App) {
     let index = LineIndex::new(&doc.source);
     let from = current_note_index(app);
 
-    let items: Vec<PreviewItem> = build_cards(&doc)
-        .iter()
-        .map(|card| {
-            let links = card_links(card, app, colors, from);
-            to_item(card, colors, scale, links)
-        })
-        .collect();
-    w.set_preview_items(model(items));
+    let chain: Vec<usize> = from.into_iter().collect();
+    let cards = expand_includes(build_cards(&doc), app, &chain);
+    update_preview(app, cards, colors, scale, from.unwrap_or(0));
 
     let mut errors = 0usize;
     let mut warnings = 0usize;
@@ -644,12 +671,6 @@ fn refresh(w: &MainWindow, text: &str, app: &App) {
             tint,
         });
     }
-    if rows.is_empty() {
-        rows.push(DiagItem {
-            text: "No problems found.".into(),
-            tint: col(colors.ok),
-        });
-    }
     w.set_diagnostics(model(rows));
 
     let status = if errors == 0 && warnings == 0 {
@@ -667,60 +688,102 @@ fn refresh(w: &MainWindow, text: &str, app: &App) {
     w.set_window_title(title.as_str().into());
 }
 
-/// Clickable links found in a card's text. Internal links are resolved against the workspace;
-/// external links carry their URL and are only opened after confirmation.
-fn card_links(card: &Card, app: &App, colors: &Colors, from: Option<usize>) -> Vec<PreviewLink> {
-    match card.kind {
-        CardKind::Paragraph | CardKind::Callout(_) | CardKind::Details | CardKind::Tab => {}
-        _ => return Vec::new(),
-    }
-    if !card.body.contains('[') && !card.body.contains('<') {
-        return Vec::new();
-    }
-    let doc = parse(&card.body);
-    let mut out = Vec::new();
-    for link in extract_all_links(&doc) {
-        if link.kind == LinkKind::External {
-            let label = link.label.clone().unwrap_or_else(|| link.target.clone());
-            let text = format!("\u{2197} {}", label);
-            out.push(PreviewLink {
-                text: text.as_str().into(),
-                target: link.target.as_str().into(),
-                external: true,
-                tint: col(colors.link),
-            });
-            continue;
+/// Brings the preview list in line with `cards`. Rows that did not change are left alone (their
+/// rich text is not re-parsed and their widgets are not rebuilt); only the changed stretch in the
+/// middle is updated. Everything is rebuilt when the theme, text size, workspace or open note
+/// changed, since those affect how unchanged cards look.
+fn update_preview(app: &App, cards: Vec<Card>, colors: &Colors, scale: f32, from: usize) {
+    let style = (app.settings.theme, scale.to_bits(), app.revision, from);
+    let model = &app.preview_model;
+    let mut renderer = Renderer { app, from };
+    let mut last = app.last_cards.borrow_mut();
+
+    if app.last_style.get() != Some(style) {
+        let items: Vec<PreviewItem> = cards
+            .iter()
+            .map(|card| to_item(card, colors, scale, &mut renderer))
+            .collect();
+        model.set_vec(items);
+    } else {
+        let old_len = last.len();
+        let new_len = cards.len();
+        let mut head = 0usize;
+        while head < old_len.min(new_len) && last[head] == cards[head] {
+            head += 1;
         }
-        let resolved = match (&app.workspace, from) {
-            (Some(ws), Some(f)) => match ws.resolve(f, &link) {
-                Resolution::Resolved(t) => Some(ws.notes()[t].path.clone()),
-                _ => None,
-            },
+        let mut tail = 0usize;
+        while tail < (old_len - head).min(new_len - head)
+            && last[old_len - 1 - tail] == cards[new_len - 1 - tail]
+        {
+            tail += 1;
+        }
+        let removed = old_len - head - tail;
+        let added = new_len - head - tail;
+        let common = removed.min(added);
+        for k in 0..common {
+            let item = to_item(&cards[head + k], colors, scale, &mut renderer);
+            model.set_row_data(head + k, item);
+        }
+        for _ in common..removed {
+            let _ = model.remove(head + common);
+        }
+        for k in common..added {
+            let item = to_item(&cards[head + k], colors, scale, &mut renderer);
+            model.insert(head + k, item);
+        }
+    }
+    *last = cards;
+    app.last_style.set(Some(style));
+}
+
+/// Replaces `lmf:include` cards with the included content (recursively), or with a warning card
+/// explaining why it could not be expanded. The author's fallback text is always kept visible in
+/// the warning case, so the document still reads sensibly.
+fn expand_includes(cards: Vec<Card>, app: &App, chain: &[usize]) -> Vec<Card> {
+    let mut out = Vec::new();
+    for card in cards {
+        let include = match &card.kind {
+            CardKind::Include {
+                document,
+                section,
+                block,
+            } => Some((document.clone(), section.clone(), block.clone())),
             _ => None,
         };
-        let shown = link_display(&link);
-        match resolved {
-            Some(path) => {
-                let text = format!("\u{2192} {}", shown);
-                out.push(PreviewLink {
-                    text: text.as_str().into(),
-                    target: path.as_str().into(),
-                    external: false,
-                    tint: col(colors.link),
+        let Some((document, section, block)) = include else {
+            out.push(card);
+            continue;
+        };
+        let Some(ws) = &app.workspace else {
+            out.push(include_problem(&card, "open a folder to expand includes"));
+            continue;
+        };
+        match ws.expand_include(chain, &document, section.as_deref(), block.as_deref()) {
+            Ok(expansion) => {
+                out.push(Card {
+                    kind: card.kind.clone(),
+                    title: format!("\u{21b3} Included from {} ({})", expansion.title, expansion.path),
+                    body: String::new(),
+                    depth: card.depth,
                 });
+                let mut next = chain.to_vec();
+                next.push(expansion.note);
+                let inner = cards_from_text(&expansion.text, card.depth + 1);
+                out.extend(expand_includes(inner, app, &next));
             }
-            None => {
-                let text = format!("\u{2717} {}", shown);
-                out.push(PreviewLink {
-                    text: text.as_str().into(),
-                    target: "".into(),
-                    external: false,
-                    tint: col(colors.error),
-                });
-            }
+            Err(e) => out.push(include_problem(&card, &e.to_string())),
         }
     }
     out
+}
+
+fn include_problem(card: &Card, message: &str) -> Card {
+    Card {
+        kind: CardKind::Callout("warning".to_string()),
+        title: format!("Include problem: {}", message),
+        body: card.body.clone(),
+        depth: card.depth,
+    }
 }
 
 /// Updates the sidebar: file list or search results, and links/backlinks of the open note.
@@ -838,40 +901,163 @@ fn link_display(link: &Link) -> String {
     format!("{}{}{}", base, frag, kind)
 }
 
-/// Maps a UI-independent [`Card`] onto Slint styling.
-fn to_item(card: &Card, c: &Colors, scale: f32, links: Vec<PreviewLink>) -> PreviewItem {
-    let (fill, accent, font, bold, mono) = match &card.kind {
+/// Turns Markdown text into Slint rich text. Internal links get self-describing `lmf:<path>`
+/// destinations; unresolvable ones are struck through; HTML is neutralised (see
+/// `lmf_core::richtext`). If the widget rejects the Markdown, the original text is shown plainly.
+struct Renderer<'a> {
+    app: &'a App,
+    /// Note that contains the text being rendered (for resolving relative names).
+    from: usize,
+}
+
+impl Renderer<'_> {
+    fn resolve(&mut self, link: &Link) -> LinkTarget {
+        let Some(ws) = &self.app.workspace else {
+            return LinkTarget::Unresolved;
+        };
+        match ws.resolve(self.from, link) {
+            Resolution::Resolved(t) => LinkTarget::Href(encode_href(&ws.notes()[t].path)),
+            _ => LinkTarget::Unresolved,
+        }
+    }
+
+    fn rich(&mut self, markdown: &str) -> StyledText {
+        if markdown.trim().is_empty() {
+            return StyledText::from_plain_text("");
+        }
+        let prepared = {
+            let mut resolver = |link: &Link| self.resolve(link);
+            display_markdown(markdown, &mut resolver)
+        };
+        StyledText::from_markdown(&prepared)
+            .unwrap_or_else(|_| StyledText::from_plain_text(markdown))
+    }
+}
+
+fn table_row(r: &mut Renderer<'_>, cells: &[String], align: &[Align], header: bool) -> TableRow {
+    let items: Vec<TableCell> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let markdown = if header && !cell.is_empty() {
+                format!("**{}**", cell)
+            } else {
+                cell.clone()
+            };
+            let code = match align.get(i) {
+                Some(Align::Center) => 1,
+                Some(Align::Right) => 2,
+                _ => 0,
+            };
+            TableCell {
+                rich: r.rich(&markdown),
+                align: code,
+            }
+        })
+        .collect();
+    TableRow {
+        cells: model(items),
+        header,
+    }
+}
+
+fn table_rows(r: &mut Renderer<'_>, t: &TableData) -> Vec<TableRow> {
+    let mut rows = vec![table_row(r, &t.header, &t.align, true)];
+    for row in &t.rows {
+        rows.push(table_row(r, row, &t.align, false));
+    }
+    rows
+}
+
+/// Maps a UI-independent [`Card`] onto Slint styling and rich text.
+fn to_item(card: &Card, c: &Colors, scale: f32, r: &mut Renderer<'_>) -> PreviewItem {
+    let mut fill = transparent();
+    let mut accent = transparent();
+    let mut font = 15.0f32;
+    let mut mono = false;
+    let mut rich_source: Option<String> = None;
+    let mut rule = false;
+    let mut rows: Vec<TableRow> = Vec::new();
+
+    match &card.kind {
         CardKind::Heading(level) => {
-            let size = match level {
+            font = match level {
                 1 => 28.0,
                 2 => 23.0,
                 3 => 19.0,
                 _ => 16.0,
             };
-            (transparent(), transparent(), size, true, false)
+            let text = card.body.trim();
+            if !text.is_empty() {
+                rich_source = Some(format!("**{}**", text));
+            }
         }
-        CardKind::Paragraph => (transparent(), transparent(), 15.0, false, false),
-        CardKind::Code => (col(c.code_fill), col(c.code_accent), 13.0, false, true),
-        CardKind::Meta => (col(c.meta_fill), col(c.meta_accent), 13.0, false, false),
+        CardKind::Paragraph => rich_source = Some(card.body.clone()),
+        CardKind::Code | CardKind::Math | CardKind::Diagram => {
+            fill = col(c.code_fill);
+            accent = col(c.code_accent);
+            font = 13.0;
+            mono = true;
+        }
+        CardKind::Meta => {
+            fill = col(c.meta_fill);
+            accent = col(c.meta_accent);
+            font = 13.0;
+        }
         CardKind::Callout(kind) => {
-            let (fill, accent) = c.callout(kind);
-            (col(fill), col(accent), 15.0, false, false)
+            let (f, a) = c.callout(kind);
+            fill = col(f);
+            accent = col(a);
+            rich_source = Some(card.body.clone());
         }
-        CardKind::Details => (col(c.details_fill), col(c.details_accent), 15.0, false, false),
-        CardKind::TabGroup | CardKind::Tab => {
-            (col(c.tab_fill), col(c.tab_accent), 15.0, false, false)
+        CardKind::Details => {
+            fill = col(c.details_fill);
+            accent = col(c.details_accent);
+            rich_source = Some(card.body.clone());
         }
-        CardKind::Unknown => (col(c.unknown_fill), col(c.unknown_accent), 13.0, false, true),
+        CardKind::TabGroup | CardKind::Tab | CardKind::Include { .. } => {
+            fill = col(c.tab_fill);
+            accent = col(c.tab_accent);
+            rich_source = Some(card.body.clone());
+        }
+        CardKind::Quote => {
+            fill = col(c.details_fill);
+            accent = col(c.details_accent);
+            rich_source = Some(card.body.clone());
+        }
+        CardKind::Rule => {
+            accent = col(c.border);
+            rule = true;
+        }
+        CardKind::Table(t) => {
+            rows = table_rows(r, t);
+        }
+        CardKind::Unknown => {
+            fill = col(c.unknown_fill);
+            accent = col(c.unknown_accent);
+            font = 13.0;
+            mono = true;
+        }
+    }
+
+    let (is_rich, rich) = match rich_source {
+        Some(markdown) if !markdown.trim().is_empty() => (true, r.rich(&markdown)),
+        _ => (false, StyledText::from_plain_text("")),
     };
+    // Plain text is only used when there is no rich text.
+    let body = if is_rich { String::new() } else { card.body.clone() };
+
     PreviewItem {
         title: card.title.as_str().into(),
-        body: card.body.as_str().into(),
+        body: body.as_str().into(),
         indent: card.depth as f32 * 18.0 * scale,
         fill,
         accent,
         font_size: font * scale,
-        bold,
         mono,
-        links: model(links),
+        is_rich,
+        rich,
+        rule,
+        rows: model(rows),
     }
 }
