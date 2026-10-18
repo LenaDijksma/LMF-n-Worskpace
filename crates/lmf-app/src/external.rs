@@ -3,6 +3,7 @@
 //! The preview never loads or executes remote content. A link is only opened after the user
 //! confirms, and only if it is a plain `http://` or `https://` URL.
 
+use std::path::Path;
 use std::process::Command;
 
 const MAX_URL_LEN: usize = 2048;
@@ -47,6 +48,24 @@ pub fn open(url: &str) -> Result<(), String> {
     result
         .map(|_| ())
         .map_err(|e| format!("could not open the link: {}", e))
+}
+
+/// Hands a local file to the operating system's default program. The caller must already have
+/// vetted the path (inside the workspace, allow-listed type) and asked the user.
+pub fn open_path(path: &Path) -> Result<(), String> {
+    let result = if cfg!(target_os = "windows") {
+        Command::new("rundll32")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(path)
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg(path).spawn()
+    } else {
+        Command::new("xdg-open").arg(path).spawn()
+    };
+    result
+        .map(|_| ())
+        .map_err(|e| format!("could not open the file: {}", e))
 }
 
 #[cfg(test)]

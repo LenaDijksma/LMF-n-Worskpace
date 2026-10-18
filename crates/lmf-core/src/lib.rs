@@ -20,11 +20,13 @@
 //! ```
 
 pub mod attrs;
+pub mod dates;
 pub mod diagnostics;
 pub mod export;
 pub mod frontmatter;
 pub mod import;
 pub mod links;
+pub mod media;
 pub(crate) mod lines;
 pub mod model;
 pub mod parser;
@@ -33,6 +35,9 @@ pub mod registry;
 pub mod richtext;
 pub mod span;
 pub mod structure;
+pub mod taskedit;
+pub mod taskquery;
+pub mod tasks;
 pub mod validate;
 
 pub use diagnostics::{Diagnostic, Severity};

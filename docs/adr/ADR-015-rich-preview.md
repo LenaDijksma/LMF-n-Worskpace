@@ -39,5 +39,10 @@ their widgets). Internal link destinations are self-describing (`lmf:<encoded pa
 cards never carry stale state; a theme, text-size, workspace or open-note change forces a full
 rebuild.
 
+**Separate Edit and Preview views.** Rendering while typing was still the main cost, so the editor and
+the preview are now separate views (one visible at a time, both kept alive). Edit view does no
+rendering; Preview view is rendered when you switch to it, using the same changed-cards-only update.
+Only the cheap problems list refreshes while typing.
+
 **Open.** Real images (Phase 3, next slice), horizontal scrolling and column sizing for tables,
 syntax highlighting in code blocks, selecting/copying rendered text.

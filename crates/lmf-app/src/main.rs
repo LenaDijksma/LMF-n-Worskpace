@@ -11,15 +11,19 @@ mod settings;
 mod theme;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
 use lmf_core::links::{Fragment, Link, LinkKind};
 use lmf_core::preview::{build_cards, cards_from_text, Align, Card, CardKind, TableData};
-use lmf_core::richtext::{decode_href, display_markdown, encode_href, LinkTarget};
+use lmf_core::media::{classify_target, encode_dest, extract_media, MediaTarget};
+use lmf_core::richtext::{
+    decode_file_href, decode_href, display_markdown, encode_href, escape, LinkTarget,
+};
 use lmf_core::{check, parse, LineIndex, Severity};
-use lmf_workspace::{scan, NoteSource, Resolution, Workspace};
+use lmf_workspace::{assets, scan, NoteSource, Resolution, Workspace};
 use slint::{Color, ComponentHandle, Model, ModelRc, StyledText, VecModel};
 
 use settings::{step_scale, Settings};
@@ -28,8 +32,9 @@ use theme::{Colors, Rgb, ThemeKind};
 slint::include_modules!();
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(2);
-/// The preview is rebuilt this long after the last keystroke, not on every key.
-const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(250);
+/// While typing, the problem list is refreshed this long after the last keystroke. (The preview is
+/// not rendered at all in Edit view.)
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(400);
 
 const SAMPLE: &str = "\
 ---
@@ -83,6 +88,8 @@ struct App {
     last_style: Cell<Option<(ThemeKind, u32, u64, usize)>>,
     /// Incremented whenever the workspace index changes, so link states are re-rendered.
     revision: u64,
+    /// Decoded images by file, with the file's modification time and size when they were loaded.
+    image_cache: RefCell<HashMap<PathBuf, (SystemTime, u64, slint::Image)>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,6 +122,7 @@ fn main() -> Result<(), slint::PlatformError> {
         last_cards: RefCell::new(Vec::new()),
         last_style: Cell::new(None),
         revision: 0,
+        image_cache: RefCell::new(HashMap::new()),
     }));
 
     // Start with a file or folder from the command line, else the last folder, else the sample.
@@ -149,8 +157,8 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // --- editing --------------------------------------------------------------------------
-    // Typing only marks the document dirty; the (comparatively expensive) preview and problem
-    // list are rebuilt once typing pauses.
+    // Typing only marks the document dirty; the problem list is refreshed once typing pauses.
+    // Edit view renders nothing else; the preview is built when switching to Preview view.
     let preview_timer = slint::Timer::default();
     window.on_text_edited({
         let weak = window.as_weak();
@@ -179,6 +187,74 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     // --- files ----------------------------------------------------------------------------
+    window.on_toggle_mode({
+        let weak = window.as_weak();
+        let state = state.clone();
+        move || {
+            let Some(w) = weak.upgrade() else { return };
+            let Ok(st) = state.try_borrow() else { return };
+            let to_preview = !w.get_preview_mode();
+            w.set_preview_mode(to_preview);
+            if to_preview {
+                // The only moment the preview is rendered after editing.
+                let text = w.get_editor_text();
+                refresh(&w, text.as_str(), &st);
+            }
+        }
+    });
+
+    window.on_attach_clicked({
+        let weak = window.as_weak();
+        let state = state.clone();
+        move || {
+            let Some(w) = weak.upgrade() else { return };
+            let Ok(mut st) = state.try_borrow_mut() else { return };
+            let Some(root) = st.root.clone() else {
+                w.set_save_status("Open a folder first, so attachments have somewhere to live".into());
+                return;
+            };
+            let Some(source) = rfd::FileDialog::new().pick_file() else {
+                return;
+            };
+            match assets::attach_file(&root, &source) {
+                Ok(asset_rel) => {
+                    let note_dir = current_rel(&st)
+                        .map(|r| assets::parent_dir(&r))
+                        .unwrap_or_default();
+                    let rel = assets::relative_path(&note_dir, &asset_rel);
+                    let name = asset_rel.rsplit('/').next().unwrap_or(&asset_rel).to_string();
+                    let stem = name
+                        .rsplit_once('.')
+                        .map(|(s, _)| s.to_string())
+                        .unwrap_or_else(|| name.clone());
+                    let is_image = assets::extension(&name)
+                        .map(|e| assets::is_image_ext(&e))
+                        .unwrap_or(false);
+                    let reference = if is_image {
+                        format!("![{}]({})", stem, encode_dest(&rel))
+                    } else {
+                        format!("[{}]({})", name, encode_dest(&rel))
+                    };
+                    let text = w.get_editor_text();
+                    let separator = if text.is_empty() || text.ends_with("\n\n") {
+                        ""
+                    } else if text.ends_with('\n') {
+                        "\n"
+                    } else {
+                        "\n\n"
+                    };
+                    let new_text = format!("{}{}{}\n", text, separator, reference);
+                    w.set_editor_text(new_text.as_str().into());
+                    st.dirty = true;
+                    let message = format!("Attached {} (copied into assets/)", name);
+                    refresh(&w, &new_text, &st);
+                    w.set_save_status(message.as_str().into());
+                }
+                Err(e) => w.set_save_status(e.as_str().into()),
+            }
+        }
+    });
+
     window.on_open_clicked({
         let weak = window.as_weak();
         let state = state.clone();
@@ -261,6 +337,8 @@ fn main() -> Result<(), slint::PlatformError> {
             let Ok(mut st) = state.try_borrow_mut() else { return };
             if let Some(path) = decode_href(url.as_str()) {
                 go_to(&w, &mut st, &path);
+            } else if let Some(target) = decode_file_href(url.as_str()) {
+                open_attachment(&w, &st, &target);
             } else {
                 open_external(&w, url.as_str());
             }
@@ -357,6 +435,40 @@ fn confirm(title: &str, description: &str) -> bool {
         .set_buttons(rfd::MessageButtons::YesNo)
         .show()
         == rfd::MessageDialogResult::Yes
+}
+
+/// Opens an attachment (a link to a local file) after vetting: the path must stay inside the
+/// workspace, the type must be on the safe list, and the user must confirm.
+fn open_attachment(w: &MainWindow, app: &App, target: &str) {
+    let Some(root) = &app.root else {
+        w.set_save_status("Open a folder first to open attachments".into());
+        return;
+    };
+    let note_rel = current_rel(app).unwrap_or_default();
+    let path = match assets::resolve(root, &note_rel, target) {
+        Ok(p) => p,
+        Err(e) => {
+            let message = format!("Not opened: {}", e);
+            w.set_save_status(message.as_str().into());
+            return;
+        }
+    };
+    let ext = assets::extension(target).unwrap_or_default();
+    if !assets::is_openable_ext(&ext) {
+        let message = format!("Not opened: .{} files are not on the safe list", ext);
+        w.set_save_status(message.as_str().into());
+        return;
+    }
+    let question = format!(
+        "This opens the file with your system's default program:\n\n{}",
+        target
+    );
+    if !confirm("Open attachment?", &question) {
+        return;
+    }
+    if let Err(e) = external::open_path(&path) {
+        w.set_save_status(e.as_str().into());
+    }
 }
 
 /// Opens an external link only if it is a plain http(s) URL and the user confirms.
@@ -634,13 +746,23 @@ fn refresh(w: &MainWindow, text: &str, app: &App) {
     let colors = app.settings.theme.colors();
     let scale = app.settings.font_scale;
     let doc = parse(text);
-    let diags = check(&doc);
+    let mut diags = check(&doc);
+    // Images and attachments: do the files exist, and are they allowed?
+    if let Some(root) = &app.root {
+        let note_rel = current_rel(app).unwrap_or_default();
+        let refs = extract_media(&doc);
+        diags.extend(assets::check_assets(root, &note_rel, &refs));
+        lmf_core::diagnostics::sort_diagnostics(&mut diags);
+    }
     let index = LineIndex::new(&doc.source);
-    let from = current_note_index(app);
 
-    let chain: Vec<usize> = from.into_iter().collect();
-    let cards = expand_includes(build_cards(&doc), app, &chain);
-    update_preview(app, cards, colors, scale, from.unwrap_or(0));
+    // The preview is only rendered in Preview view; Edit view does no rendering work.
+    if w.get_preview_mode() {
+        let from = current_note_index(app);
+        let chain: Vec<usize> = from.into_iter().collect();
+        let cards = expand_includes(build_cards(&doc), app, &chain);
+        update_preview(app, cards, colors, scale, from.unwrap_or(0));
+    }
 
     let mut errors = 0usize;
     let mut warnings = 0usize;
@@ -688,6 +810,12 @@ fn refresh(w: &MainWindow, text: &str, app: &App) {
     w.set_window_title(title.as_str().into());
 }
 
+/// Whether a card can be left untouched. Image cards are always re-rendered, because the file
+/// behind them can change without the card changing (the image cache keeps this cheap).
+fn same_card(a: &Card, b: &Card) -> bool {
+    a == b && !matches!(a.kind, CardKind::Image { .. })
+}
+
 /// Brings the preview list in line with `cards`. Rows that did not change are left alone (their
 /// rich text is not re-parsed and their widgets are not rebuilt); only the changed stretch in the
 /// middle is updated. Everything is rebuilt when the theme, text size, workspace or open note
@@ -708,12 +836,12 @@ fn update_preview(app: &App, cards: Vec<Card>, colors: &Colors, scale: f32, from
         let old_len = last.len();
         let new_len = cards.len();
         let mut head = 0usize;
-        while head < old_len.min(new_len) && last[head] == cards[head] {
+        while head < old_len.min(new_len) && same_card(&last[head], &cards[head]) {
             head += 1;
         }
         let mut tail = 0usize;
         while tail < (old_len - head).min(new_len - head)
-            && last[old_len - 1 - tail] == cards[new_len - 1 - tail]
+            && same_card(&last[old_len - 1 - tail], &cards[new_len - 1 - tail])
         {
             tail += 1;
         }
@@ -921,6 +1049,52 @@ impl Renderer<'_> {
         }
     }
 
+    /// Loads a local image if policy allows (inside the workspace, png/jpg/gif, at most 4 MiB and
+    /// 16 megapixels). Remote and unsupported addresses are never loaded. On failure returns a
+    /// Markdown explanation for the preview.
+    fn load_image(&mut self, src: &str) -> Result<slint::Image, String> {
+        match classify_target(src) {
+            MediaTarget::Remote(url) => Err(format!(
+                "Remote images are never loaded (nothing is fetched from the web): {}",
+                escape(&url)
+            )),
+            MediaTarget::Unsupported(address) => {
+                Err(format!("Unsupported image address: {}", escape(&address)))
+            }
+            MediaTarget::Local(path) => {
+                let Some(root) = &self.app.root else {
+                    return Err(format!(
+                        "Open a folder to show local images: {}",
+                        escape(&path)
+                    ));
+                };
+                let note_rel = current_rel(self.app).unwrap_or_default();
+                let full = assets::resolve(root, &note_rel, &path)
+                    .map_err(|e| format!("{}: {}", escape(&path), e))?;
+                let file_stamp = stamp(&full);
+                {
+                    let cache = self.app.image_cache.borrow();
+                    if let (Some(s), Some((t, l, img))) = (file_stamp, cache.get(&full)) {
+                        if (*t, *l) == s {
+                            return Ok(img.clone());
+                        }
+                    }
+                }
+                assets::check_image(&full).map_err(|e| format!("{}: {}", escape(&path), e))?;
+                let img = slint::Image::load_from_path(&full)
+                    .map_err(|_| format!("{}: could not decode the image", escape(&path)))?;
+                if let Some((t, l)) = file_stamp {
+                    let mut cache = self.app.image_cache.borrow_mut();
+                    if cache.len() >= 32 {
+                        cache.clear();
+                    }
+                    cache.insert(full, (t, l, img.clone()));
+                }
+                Ok(img)
+            }
+        }
+    }
+
     fn rich(&mut self, markdown: &str) -> StyledText {
         if markdown.trim().is_empty() {
             return StyledText::from_plain_text("");
@@ -978,6 +1152,9 @@ fn to_item(card: &Card, c: &Colors, scale: f32, r: &mut Renderer<'_>) -> Preview
     let mut rich_source: Option<String> = None;
     let mut rule = false;
     let mut rows: Vec<TableRow> = Vec::new();
+    let mut has_image = false;
+    let mut image = slint::Image::default();
+    let mut title = card.title.clone();
 
     match &card.kind {
         CardKind::Heading(level) => {
@@ -993,6 +1170,19 @@ fn to_item(card: &Card, c: &Colors, scale: f32, r: &mut Renderer<'_>) -> Preview
             }
         }
         CardKind::Paragraph => rich_source = Some(card.body.clone()),
+        CardKind::Image { src } => match r.load_image(src) {
+            Ok(img) => {
+                has_image = true;
+                image = img;
+            }
+            Err(message) => {
+                let (f, a) = c.callout("warning");
+                fill = col(f);
+                accent = col(a);
+                title = "Image not shown".to_string();
+                rich_source = Some(message);
+            }
+        },
         CardKind::Code | CardKind::Math | CardKind::Diagram => {
             fill = col(c.code_fill);
             accent = col(c.code_accent);
@@ -1048,7 +1238,7 @@ fn to_item(card: &Card, c: &Colors, scale: f32, r: &mut Renderer<'_>) -> Preview
     let body = if is_rich { String::new() } else { card.body.clone() };
 
     PreviewItem {
-        title: card.title.as_str().into(),
+        title: title.as_str().into(),
         body: body.as_str().into(),
         indent: card.depth as f32 * 18.0 * scale,
         fill,
@@ -1058,6 +1248,8 @@ fn to_item(card: &Card, c: &Colors, scale: f32, r: &mut Renderer<'_>) -> Preview
         is_rich,
         rich,
         rule,
+        has_image,
+        image,
         rows: model(rows),
     }
 }

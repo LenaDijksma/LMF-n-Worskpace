@@ -25,6 +25,10 @@ pub enum CardKind {
     Details,
     TabGroup,
     Tab,
+    /// A paragraph that is just an image. `src` is the address as written (cleaned of an optional
+    /// title); the alt text is in `body`. A front end decides whether and how to show it
+    /// (see [`crate::media::classify_target`]).
+    Image { src: String },
     /// A block quote; `body` is the quoted Markdown with the `>` markers removed.
     Quote,
     /// A thematic break (`---`).
@@ -466,6 +470,23 @@ fn flush_paragraph(para: &mut Vec<&str>, depth: usize, out: &mut Vec<Card>) {
     if para.is_empty() {
         return;
     }
+    // Lines that are each exactly one image become image cards.
+    let images: Option<Vec<(String, String)>> = para
+        .iter()
+        .map(|l| crate::media::parse_image_line(l))
+        .collect();
+    if let Some(images) = images {
+        for (alt, src) in images {
+            out.push(Card {
+                kind: CardKind::Image { src },
+                title: String::new(),
+                body: alt,
+                depth,
+            });
+        }
+        para.clear();
+        return;
+    }
     let structured = para.iter().any(|l| is_structured(l));
     let body = if structured {
         para.join("\n")
@@ -696,6 +717,16 @@ mod tests {
             kinds,
             vec![CardKind::Paragraph, CardKind::Rule, CardKind::Paragraph]
         );
+    }
+
+    #[test]
+    fn image_only_paragraphs_become_image_cards() {
+        let c = cards("![A cat](assets/cat.png)\n![Dog](dog.jpg \"t\")\n\nText with ![inline](x.png) image.\n");
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0].kind, CardKind::Image { src: "assets/cat.png".to_string() });
+        assert_eq!(c[0].body, "A cat");
+        assert_eq!(c[1].kind, CardKind::Image { src: "dog.jpg".to_string() });
+        assert_eq!(c[2].kind, CardKind::Paragraph);
     }
 
     #[test]

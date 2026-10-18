@@ -24,6 +24,9 @@ pub fn validate(doc: &Document) -> Vec<Diagnostic> {
     let mut ids: HashMap<String, Span> = HashMap::new();
     validate_blocks(&doc.blocks, None, &mut ids, &mut out);
 
+    // Invalid or repeated task fields (`[due: …]`, `[priority: …]`, …).
+    out.extend(crate::tasks::parse_tasks(doc).diagnostics);
+
     // Block IDs (`^id`) share one namespace with directive `id` attributes.
     for b in crate::structure::block_ids(doc) {
         match ids.get(&b.id).copied() {
@@ -514,6 +517,16 @@ mod tests {
         assert_eq!(codes_of("One ^aa\n\nTwo ^aa\n"), vec!["LMF005"]);
         assert_eq!(
             codes_of(":::lmf:callout {id=\"aa\"}\nx\n:::\n\nPara ^aa\n"),
+            vec!["LMF005"]
+        );
+    }
+
+    #[test]
+    fn task_field_problems_are_reported() {
+        assert!(codes_of("- [ ] a [due: 2026-11-03] [priority: high] ^t-aa\n").is_empty());
+        assert_eq!(codes_of("- [ ] a [due: tomorrow]\n"), vec!["LMF021"]);
+        assert_eq!(
+            codes_of("- [ ] a ^t-aa\n- [ ] b ^t-aa\n"),
             vec!["LMF005"]
         );
     }

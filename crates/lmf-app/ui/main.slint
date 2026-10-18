@@ -38,6 +38,8 @@ export struct PreviewItem {
     is-rich: bool,
     rich: styled-text,
     rule: bool,
+    has-image: bool,
+    image: image,
     rows: [TableRow],
 }
 
@@ -76,12 +78,16 @@ export component MainWindow inherits Window {
     in property <length> editor-font-size: 14px;
     in-out property <string> editor-text: "";
     in-out property <bool> diag-open: true;
+    // false = Edit view (editor only, nothing rendered); true = Preview view (rendered document).
+    in-out property <bool> preview-mode: false;
     in property <[PreviewItem]> preview-items: [];
     in property <[DiagItem]> diagnostics: [];
     in property <[NavItem]> nav-items: [];
     in property <[LinkItem]> link-items: [];
 
     callback open-clicked();
+    callback attach-clicked();
+    callback toggle-mode();
     callback save-clicked();
     callback text-edited(string);
     callback open-folder-clicked();
@@ -102,7 +108,7 @@ export component MainWindow inherits Window {
 
     // Keyboard shortcuts (Ctrl, or Cmd on macOS):
     //   S save · O open file · Shift+O open folder · F search
-    //   + / - font size · Shift+T cycle theme · J show/hide problems
+    //   + / - font size · Shift+T cycle theme · J show/hide problems · E edit/preview
     FocusScope {
         key-pressed(event) => {
             if (event.modifiers.control || event.modifiers.meta) {
@@ -114,6 +120,7 @@ export component MainWindow inherits Window {
                 if (event.text == "-") { root.font-smaller(); return accept; }
                 if (event.text == "T") { root.theme-clicked(); return accept; }
                 if (event.text == "j") { root.diag-open = !root.diag-open; return accept; }
+                if (event.text == "e") { root.toggle-mode(); return accept; }
             }
             return reject;
         }
@@ -221,6 +228,14 @@ export component MainWindow inherits Window {
                         text: "Save";
                         clicked => { root.save-clicked(); }
                     }
+                    Button {
+                        text: root.preview-mode ? "✎ Edit" : "▤ Preview";
+                        clicked => { root.toggle-mode(); }
+                    }
+                    Button {
+                        text: "Attach file…";
+                        clicked => { root.attach-clicked(); }
+                    }
                     Text {
                         text: root.save-status;
                         color: Theme.text;
@@ -241,17 +256,29 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Editor | Preview
-                HorizontalLayout {
-                    spacing: 1px;
+                // Edit view | Preview view: stacked, one visible at a time. Both stay alive so the
+                // editor keeps its cursor, scroll position and undo history, and the preview keeps
+                // its scroll position.
+                Rectangle {
+                    vertical-stretch: 1;
 
                     TextEdit {
+                        visible: !root.preview-mode;
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
                         font-size: root.editor-font-size;
                         text <=> root.editor-text;
                         edited(t) => { root.text-edited(t); }
                     }
 
                     Rectangle {
+                        visible: root.preview-mode;
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
                         background: Theme.panel-bg;
                         ScrollView {
                             VerticalLayout {
@@ -282,6 +309,13 @@ export component MainWindow inherits Window {
                                                 if item.rule: Rectangle {
                                                     height: 2px;
                                                     background: item.accent;
+                                                }
+                                                if item.has-image: Image {
+                                                    source: item.image;
+                                                    image-fit: contain;
+                                                    accessible-role: image;
+                                                    accessible-label: item.body;
+                                                    height: min(item.image.height * 1px, 420px * Theme.scale);
                                                 }
                                                 if item.body != "" && !item.is-rich: Text {
                                                     text: item.body;

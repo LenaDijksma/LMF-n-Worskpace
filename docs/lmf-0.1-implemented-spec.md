@@ -100,8 +100,19 @@ Everything else is an **unknown extension**: preserved verbatim, never executed,
 | LMF015 | unclosed code fence | warning |
 | LMF016 | extension payload version newer than supported | warning |
 | LMF017 | invalid metadata value | error / warning |
+| LMF018 | referenced image or attachment not found (needs a workspace folder; `lmf check --assets`) | warning |
+| LMF019 | image/attachment rejected by policy (outside workspace, too large, unsupported type or address) | warning / info |
+| LMF020 | remote image, never loaded | info |
+| LMF021 | invalid or repeated task field (`[due: …]`, `[priority: …]`, …) | warning |
+| LMF022 | task id also used in another note (`lmf-workspace`) | warning |
 
-Codes are stable; never renumber.
+Codes are stable; never renumber. `LMF018`–`LMF020` are produced by `lmf-workspace` (they need the
+filesystem), not by `lmf_core::check`.
+
+### 5.1 Images and attachments
+
+`![alt](path)` is an image; `[text](path)` to a local non-note file is an attachment (ADR-016).
+`lmf_core::media::extract_media` finds them (ignoring code and unknown extension blocks).
 
 ## 6. Conversion
 
@@ -117,3 +128,11 @@ Codes are stable; never renumber.
 Core Reader (preserves unknown extensions), Core Writer for export/import paths that never
 rewrite untouched regions, and Validator for the rules above. No Runtime. No claim to full
 CommonMark/GFM parsing yet (ADR-001).
+
+## 8. Tasks (ADR-017)
+
+A task is a Markdown checkbox item with optional `[key: value]` fields (`due`, `start`, `done`,
+`priority`, `status`, `estimate`, `repeat`, `after`), `#tags`, nested subtasks and an optional
+`^id`. Dates are `YYYY-MM-DD` (floating) or `YYYY-MM-DDTHH:MM±HH:MM` / `…Z` (offset required).
+Queries: `status:` `is:` `tag:` `priority:` `due:` `start:` `done:` `note:` `id:` `has:` `sort:`,
+free text, `-` to negate (module docs of `lmf_core::taskquery`). CLI: `lmf tasks`, `lmf task-ids`.

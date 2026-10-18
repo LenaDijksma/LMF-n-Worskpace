@@ -1,0 +1,7 @@
+# Sprint
+
+- [ ] Write the parser [due: 2026-11-03] [priority: high] #dev ^t-parser
+  - [x] Define the grammar [done: 2026-10-20]
+  - [ ] Add tests [estimate: 1h30m] [after: t-parser]
+- [ ] Water the plants [due: 2026-11-04T09:00+01:00] [repeat: weekly]
+- [ ] Review docs [status: review] [start: 2026-11-01]

@@ -2572,6 +2572,7 @@ name = "lmf-cli"
 version = "0.1.0"
 dependencies = [
  "lmf-core",
+ "lmf-workspace",
 ]
 
 [[package]]

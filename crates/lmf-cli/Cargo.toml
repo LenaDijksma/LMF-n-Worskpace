@@ -11,3 +11,4 @@ path = "src/main.rs"
 
 [dependencies]
 lmf-core = { path = "../lmf-core" }
+lmf-workspace = { path = "../lmf-workspace" }

@@ -48,6 +48,17 @@ pub mod codes {
     pub const UNCLOSED_FENCE: &str = "LMF015";
     pub const EXTENSION_VERSION: &str = "LMF016";
     pub const INVALID_METADATA_VALUE: &str = "LMF017";
+    /// A referenced image or attachment does not exist.
+    pub const MISSING_ASSET: &str = "LMF018";
+    /// A referenced image or attachment is rejected by policy (outside the workspace, too large,
+    /// unsupported type or address).
+    pub const REJECTED_ASSET: &str = "LMF019";
+    /// A remote (web) image: never loaded.
+    pub const REMOTE_IMAGE: &str = "LMF020";
+    /// A task field (`[due: …]`, `[priority: …]`, …) has an invalid or repeated value.
+    pub const INVALID_TASK_FIELD: &str = "LMF021";
+    /// The same task id is used by tasks in different notes.
+    pub const DUPLICATE_TASK_ID: &str = "LMF022";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

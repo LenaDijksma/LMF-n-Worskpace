@@ -13,10 +13,9 @@ The end product is a **native desktop application with a GUI** (not a website), 
 | `crates/lmf-workspace` | Workspace index: folder scan, link resolution, backlinks, search. Pure logic plus one scanner module. |
 | `crates/lmf-app`  | **Phase 2:** the `lovely` desktop app (Slint): folder navigation, search, editor, preview, diagnostics, links/backlinks, autosave. |
 
-> **Status.** Phases 1–2 build and run. The newest changes (rich-text preview with bold/italic,
-> lists, tables, quotes and clickable links; collapsible problems bar; block IDs; `lmf:include`,
-> `lmf:math`, `lmf:diagram`) were written without a compiler and have not been built yet. Still to
-> do in Phase 3: images and attachments.
+> **Status.** Phases 1–3 build and run. Phase 4 has started: the task engine (parsing, dates,
+> query language, safe edits, workspace index, CLI) was written without a compiler and has not been
+> built yet; the task *views* in the app (list, board, agenda, saved views) come next.
 
 ## Build and test
 
@@ -33,10 +32,13 @@ cargo run -p lmf-app -- ~/notes    # desktop app, opening a folder
 ```sh
 lmf check notes.lmf                      # diagnostics as file:line:col: severity[CODE]: message
 lmf check --strict --format json *.lmf   # CI-friendly; exit 1 on errors (or warnings with --strict)
+lmf check --assets notes/trip.md         # also verify referenced images and attachments
 lmf to-markdown notes.lmf -o notes.md    # plain Markdown; every loss is listed on stderr
 lmf to-markdown --unknown drop --front-matter strip notes.lmf   # destructive options are explicit
 lmf from-markdown --stamp README.md      # GitHub alerts -> callouts, adds lmf_version front matter
 lmf ast notes.lmf                        # show the parsed structure
+lmf tasks --query "status:active due:week sort:due" ~/notes   # list tasks across a folder
+lmf task-ids ~/notes                     # dry run: which tasks would get stable ids (--write to apply)
 ```
 
 ## What Phase 1 covers
@@ -51,6 +53,13 @@ lmf ast notes.lmf                        # show the parsed structure
 * **Built-in extensions:** `lmf:callout`, `lmf:details`, `lmf:tabs` / `lmf:tab`, `lmf:include`
   (transclusion), `lmf:math`, `lmf:diagram` (math and diagram source is shown, never executed).
 * **Block IDs** (`^id`) for linking to and including single blocks.
+* **Tasks** (ADR-017): checkbox list items with `[due: …]`, `[priority: …]`, `[status: …]`, `[repeat: …]`
+  fields, stable `^ids`, subtasks and dependencies; a query language; safe one-line edits (complete,
+  move between columns, recurrence); explicit date vs timestamp handling.
+* **Images and attachments** (ADR-016): local `png`/`jpg`/`gif` images are shown in the preview (size and
+  pixel limits, nothing fetched from the web); attachments open only after confirmation and only for
+  safe file types; **Attach file…** copies a file into `assets/` and inserts the reference;
+  `lmf check --assets` reports missing or rejected files.
 * **Validator** with stable diagnostic codes `LMF001`–`LMF017` (see `docs/lmf-0.1-implemented-spec.md`).
 * **Converters** with loss reporting: LMF → plain Markdown, Markdown (GitHub alerts) → LMF.
 * **Fixture corpus** in `crates/lmf-core/tests/fixtures/` (`.lmf` + `.expect` per case).
@@ -60,7 +69,10 @@ lmf ast notes.lmf                        # show the parsed structure
 * **Open folder…** scans for `.md`, `.markdown` and `.lmf` files (hidden files and symlinks are
   skipped; unreadable/non-UTF-8/oversized files are counted, not hidden). Click a note to open it.
 * **Search** box: all terms must match title, aliases, tags, headings, path or text; best matches first.
-* **Editor + formatted preview + live diagnostics.** The preview renders bold, italic, strikethrough,
+* **Edit and Preview views.** Edit view is just the editor (nothing is rendered while you type; only the
+  problems list refreshes after you pause). The **✎ Edit / ▤ Preview** button (or Ctrl+E) switches view;
+  the preview is rendered when you switch to it.
+* **Formatted preview + live diagnostics.** The preview renders bold, italic, strikethrough,
   inline code, links, bullet/numbered/task lists, **tables**, block quotes, rules and headings (ADR-015).
   Links in the preview are clickable.
 * **Links and backlinks panel** for the open note: `[[wikilinks]]` and relative Markdown links,
@@ -79,7 +91,7 @@ lmf ast notes.lmf                        # show the parsed structure
 * **Themes and text size:** Light, Dark and High contrast (contrast ratios are enforced by tests),
   text scaling 80–200%. Choices are remembered (ADR-012).
 * **Keyboard shortcuts** (Ctrl, or Cmd on macOS): `S` save · `O` open file · `Shift+O` open folder ·
-  `F` search · `+` / `-` text size · `Shift+T` cycle theme.
+  `F` search · `+` / `-` text size · `Shift+T` cycle theme · `J` show/hide problems · `E` edit/preview.
 * **Clickable links in the preview.** Internal links jump to the note; external `http(s)` links ask
   for confirmation first. Raw HTML is shown as inert text; nothing is fetched automatically.
 * **Accessibility baseline:** screen-reader roles and labels on lists and links, colour never the
@@ -106,7 +118,7 @@ reports missing libraries.
 Recorded in `docs/adr/`. All are reversible and marked *proposed*.
 
 * ADR-001 Markdown baseline · ADR-002 Directive grammar · ADR-003 Metadata syntax
-* ADR-005 Source-preserving parser · ADR-009 Native desktop GUI · ADR-010 Slint toolkit · ADR-011 Links and search · ADR-012 Safe content and accessibility · ADR-013 Block IDs · ADR-014 Transclusion · ADR-015 Rich preview
+* ADR-005 Source-preserving parser · ADR-009 Native desktop GUI · ADR-010 Slint toolkit · ADR-011 Links and search · ADR-012 Safe content and accessibility · ADR-013 Block IDs · ADR-014 Transclusion · ADR-015 Rich preview · ADR-016 Images and attachments · ADR-017 Tasks
 
 Licensing is undecided (spec open decision 32), so the crates are `publish = false` and carry no
 license field.

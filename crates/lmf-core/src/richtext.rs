@@ -128,7 +128,22 @@ pub fn display_markdown(
 /// Destination used for internal links in rich text: `lmf:` followed by the percent-encoded
 /// workspace path of the note. Self-describing, so rendered text never goes stale.
 pub fn encode_href(path: &str) -> String {
-    let mut out = String::from("lmf:");
+    format!("lmf:{}", percent_encode_path(path))
+}
+
+/// Destination used for attachment links: `lmf-file:` plus the percent-encoded path *as written*
+/// (relative to the note that contains the link). The front end resolves and vets it on click.
+pub fn encode_file_href(path: &str) -> String {
+    format!("lmf-file:{}", percent_encode_path(path))
+}
+
+/// Inverse of [`encode_file_href`].
+pub fn decode_file_href(url: &str) -> Option<String> {
+    percent_decode_strict(url.strip_prefix("lmf-file:")?)
+}
+
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
     for b in path.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') {
             out.push(b as char);
@@ -141,7 +156,10 @@ pub fn encode_href(path: &str) -> String {
 
 /// Inverse of [`encode_href`]. Returns `None` for anything that is not a well-formed `lmf:` href.
 pub fn decode_href(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("lmf:")?;
+    percent_decode_strict(url.strip_prefix("lmf:")?)
+}
+
+fn percent_decode_strict(rest: &str) -> Option<String> {
     let b = rest.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0usize;
@@ -168,15 +186,15 @@ fn hex_value(c: u8) -> Option<u8> {
     }
 }
 
-struct BracketLink<'a> {
-    label: &'a str,
-    dest: &'a str,
+pub(crate) struct BracketLink<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) dest: &'a str,
     /// Offset just past the closing `)`.
-    end: usize,
+    pub(crate) end: usize,
 }
 
 /// Parses `[label](dest)` at `start` (where `text[start] == '['`), on a single line.
-fn bracket_link(text: &str, start: usize) -> Option<BracketLink<'_>> {
+pub(crate) fn bracket_link(text: &str, start: usize) -> Option<BracketLink<'_>> {
     let b = text.as_bytes();
     let mut depth = 0usize;
     let mut i = start;
@@ -296,6 +314,16 @@ fn push_md_link(
         out.push_str(&escape_lt(label));
     } else {
         let (path, fragment) = split_fragment(dest);
+        if !is_note_path(path) && !path.contains(':') && crate::media::has_file_extension(path) {
+            // An attachment: clickable, but only ever opened after the front end vets it.
+            let decoded = crate::media::decode_percent(path);
+            out.push('[');
+            out.push_str(&escape_lt(label));
+            out.push_str("](");
+            out.push_str(&encode_file_href(&decoded));
+            out.push(')');
+            return;
+        }
         if is_note_path(path) {
             let link = Link {
                 kind: LinkKind::Markdown,
@@ -436,8 +464,14 @@ mod tests {
         assert_eq!(show("[x](javascript:alert(1))"), "x");
         assert_eq!(show("[x](file:///etc/passwd)"), "x");
         assert_eq!(show("[mail](mailto:a@b.c)"), "mail");
-        // A non-note relative file is plain text (attachments are handled elsewhere).
-        assert_eq!(show("[doc](files/a.pdf)"), "doc");
+        // A relative file with an extension is an attachment link (vetted by the front end on click).
+        assert_eq!(show("[doc](files/a.pdf)"), "[doc](lmf-file:files/a.pdf)");
+        assert_eq!(
+            show("[doc](my%20files/a%20b.pdf)"),
+            "[doc](lmf-file:my%20files/a%20b.pdf)"
+        );
+        assert_eq!(show("[x](javascript:a.b)"), "x");
+        assert_eq!(show("[folder](files/)"), "folder");
     }
 
     #[test]
@@ -478,6 +512,15 @@ mod tests {
             assert!(!href.contains(' ') && !href.contains('(') && !href.contains(')'));
             assert_eq!(decode_href(&href).as_deref(), Some(path), "{}", href);
         }
+    }
+
+    #[test]
+    fn file_hrefs_round_trip() {
+        let href = encode_file_href("my files/a (1).pdf");
+        assert!(href.starts_with("lmf-file:"));
+        assert_eq!(decode_file_href(&href).as_deref(), Some("my files/a (1).pdf"));
+        assert_eq!(decode_file_href("lmf:x"), None);
+        assert_eq!(decode_href("lmf-file:x"), None);
     }
 
     #[test]

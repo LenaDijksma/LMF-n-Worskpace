@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use lmf_core::diagnostics::Diagnostic;
 use lmf_core::frontmatter::{FrontMatter, MetaValue};
 use lmf_core::links::{extract_links, Link, LinkKind};
 use lmf_core::parse;
 use lmf_core::span::Span;
+use lmf_core::tasks::{parse_tasks, Task};
 use lmf_core::structure::{block_ids, block_text, find_heading, headings as doc_headings, section_span};
 
 const NOTE_EXTENSIONS: &[&str] = &[".md", ".markdown", ".lmf"];
@@ -28,6 +30,10 @@ pub struct Note {
     pub headings: Vec<String>,
     /// Block ids (`^id`) defined in the note, plus ids of extension blocks.
     pub block_ids: Vec<String>,
+    /// Tasks in this note, in source order (`Task::parent` indexes this list).
+    pub tasks: Vec<Task>,
+    /// Problems with task fields in this note.
+    pub task_diagnostics: Vec<Diagnostic>,
     /// Outgoing links as written (unresolved).
     pub links: Vec<Link>,
     pub text: String,
@@ -480,6 +486,7 @@ fn build_note(src: NoteSource) -> Note {
         None => (Vec::new(), Vec::new()),
     };
     let links = extract_links(&doc);
+    let task_parse = parse_tasks(&doc);
     let text_lower = src.text.to_lowercase();
     Note {
         path: src.path,
@@ -488,6 +495,8 @@ fn build_note(src: NoteSource) -> Note {
         tags,
         headings,
         block_ids: ids,
+        tasks: task_parse.tasks,
+        task_diagnostics: task_parse.diagnostics,
         links,
         text: src.text,
         text_lower,

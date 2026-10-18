@@ -8,11 +8,14 @@
 //!
 //! Link resolution rules are documented in `docs/adr/ADR-011-links-and-search.md`.
 
+pub mod assets;
 pub mod index;
 pub mod scan;
+pub mod tasks;
 
 pub use index::{
     Backlink, Expansion, IncludeError, Note, NoteSource, Resolution, SearchHit, Workspace,
     MAX_INCLUDE_DEPTH,
 };
 pub use scan::{scan, ScanResult, Skipped};
+pub use tasks::{write_note_atomic, DuplicateId, TaskHit};

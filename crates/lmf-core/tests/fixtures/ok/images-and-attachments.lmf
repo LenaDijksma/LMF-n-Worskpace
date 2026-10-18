@@ -1,0 +1,10 @@
+# Trip notes
+
+![Map of the route](assets/route-map.png)
+
+A [packing list](assets/packing-list.pdf) is attached. Remote pictures such as
+![a web image](https://example.org/photo.jpg) are never fetched, only reported.
+
+:::lmf:callout {kind="tip" title="Photos"}
+![Sunset over the bay](assets/sunset.jpg)
+:::
